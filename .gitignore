@@ -45,3 +45,4 @@ Saved/
 Publish-EmsAddonsRelease.ps1
 Publish-EmsAddonsRelease-v2.ps1
 Run-Publish-EmsAddonsRelease.bat
+Run-REPAIR-EMSAddonsRelease-ONCE.bat
