@@ -1,8 +1,6 @@
 # Easy Multi Save Addons
 
-**EMSAddons** adds focused persistence helpers for Unreal Engine systems that need more than normal Easy Multi Save actor saving.
-
-All addons use the existing EMS save slots and serialization. There is no separate gameplay save workflow.
+**Easy Multi Save Addons** provide ready-made extensions for more specialized Unreal Engine workflows that would otherwise require project-specific Blueprint logic. They build directly on Easy Multi Save, reusing its save system while keeping the core plugin lean and focused.
 
 ## Addons
 
