@@ -28,23 +28,15 @@ No manual transfer or cell-management calls are required after spawning.
 - Normal EMS saves capture the actor at its current location.
 - Gameplay destruction removes the persistent runtime record.
 
-## NPCs and AI Controllers
+## NPCs
 
-Managed Pawns work like other World Partition Runtime Actors. When EMSAddons makes a managed Pawn dormant, the Pawn is destroyed and later respawned as a new actor.
+Managed Pawns work like other World Partition Runtime Actors. EMSAddons automatically cleans up an orphaned non-player Controller when a managed Pawn becomes dormant; restored Pawns use Unreal's normal **Auto Possess AI** behavior.
 
-AI Controllers remain normal transient Unreal actors. EMSAddons does not save or restore controller objects. When it removes a managed Pawn, it automatically destroys that Pawn's non-player Controller after normal unpossession, provided the Controller did not take possession of another Pawn. Player Controllers are never touched.
+Keep persistent gameplay state on the Pawn and let the AI rebuild its runtime state from those loaded actor variables. For example, a StateTree can be started after **Actor Loaded** and simply derive its state from the restored variables instead of persisting the StateTree itself.
 
-For an NPC:
+Set **Auto Possess AI** to **Spawned** or **Placed in World or Spawned** when the restored Pawn should automatically receive a Controller.
 
-1. Put persistent AI state on the Pawn and save it normally. If important state currently lives on the Controller or Blackboard, copy the values worth keeping onto the Pawn in **Actor Pre Save**.
-2. Set **Auto Possess AI** to **Spawned** or **Placed in World or Spawned** so Unreal creates a Controller for the restored Pawn.
-3. In **Actor Loaded**, apply any restored AI state that must be pushed back into the new Controller, Blackboard, perception setup, squad registration, or other runtime systems.
-
-No controller persistence, special NPC component, or manual controller cleanup is required.
-
-**Is Managed Actor Removal In Progress** remains useful when an actor has other external dependencies or when **End Play** must distinguish streaming removal from normal gameplay destruction.
-
-Hard references to a dormant actor or its controller do not survive. Soft references by stable name do, which is what makes them the right way to point at a managed actor.
+**Is Managed Actor Removal In Progress** is available when **End Play** needs to distinguish streaming removal from normal gameplay destruction.
 
 ## When to use it
 
