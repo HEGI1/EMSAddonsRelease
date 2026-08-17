@@ -50,3 +50,5 @@ Run-Publish-EmsAddonsRelease-Versioned.bat
 Publish-EmsAddonsRelease-Versioned.ps1
 Publish-EmsAddonsRelease-Versioned-FIXED.ps1
 Run-Publish-EmsAddonsRelease-Versioned-FIXED.bat
+Run-Publish-EmsAddonsRelease-Versioned-v3.1.bat
+Publish-EmsAddonsRelease-Versioned-v3.1.ps1

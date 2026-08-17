@@ -1,5 +1,7 @@
 # Easy Multi Save Addons
 
+**Current Version: 0.2.4**
+
 **Easy Multi Save Addons** provide ready-made extensions for more specialized Unreal Engine workflows that would otherwise require project-specific Blueprint logic. They build directly on Easy Multi Save, reusing its save system while keeping the core plugin lean and focused.
 
 ## Addons
@@ -35,7 +37,7 @@ Save and load normally through EMS after setup.
 See the [Changelog](Plugins/EmsAddons/CHANGELOG.md) for release notes and recent changes.
 
 ## Requirements
-$10.2.3
+- EMSAddons 0.2.4
 - Unreal Engine 5.8
 - Easy Multi Save 1.85 or compatible newer release
 - Unreal `GeometryCollectionPlugin`
