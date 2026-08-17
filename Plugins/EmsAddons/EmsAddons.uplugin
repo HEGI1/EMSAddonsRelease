@@ -1,7 +1,7 @@
 {
 	"FileVersion": 3,
-	"Version": 2,
-	"VersionName": "0.2.0",
+	"Version": 4,
+	"VersionName": "0.2.3",
 	"FriendlyName": "EmsAddons",
 	"Description": "Autosave, checkpoints, runtime and World Partition actor, Geometry Collection, Level Sequence, ISM/HISM, and painted-foliage integrations for Easy Multi Save.",
 	"Category": "Save System",

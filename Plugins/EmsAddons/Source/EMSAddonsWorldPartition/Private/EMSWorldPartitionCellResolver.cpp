@@ -34,7 +34,7 @@ EMSAddonsWorldPartition::FEMSWorldPartitionCellCoverage EMSAddonsWorldPartition:
 		return Coverage;
 	}
 
-	//A zero radius makes the engine emit no query shape at all, which would intersect no
+	//A zero radius makes the engine emit no query shape at all, which would intersect no 
 	//cells. The radius only has to be large enough to produce a shape, because the
 	//candidates below are still filtered down to the ones containing the location.
 	FWorldPartitionStreamingQuerySource Source(Location);

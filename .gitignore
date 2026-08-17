@@ -46,3 +46,7 @@ Publish-EmsAddonsRelease.ps1
 Publish-EmsAddonsRelease-v2.ps1
 Run-Publish-EmsAddonsRelease.bat
 Run-REPAIR-EMSAddonsRelease-ONCE.bat
+Run-Publish-EmsAddonsRelease-Versioned.bat
+Publish-EmsAddonsRelease-Versioned.ps1
+Publish-EmsAddonsRelease-Versioned-FIXED.ps1
+Run-Publish-EmsAddonsRelease-Versioned-FIXED.bat

@@ -35,8 +35,7 @@ Save and load normally through EMS after setup.
 See the [Changelog](Plugins/EmsAddons/CHANGELOG.md) for release notes and recent changes.
 
 ## Requirements
-
-- EMSAddons 0.2.0
+$10.2.3
 - Unreal Engine 5.8
 - Easy Multi Save 1.85 or compatible newer release
 - Unreal `GeometryCollectionPlugin`
