@@ -4,12 +4,14 @@
 
 ### Added
 
+- **Instanced Meshes and Foliage:** **Replace Instance** replaces one managed ISM, HISM, or painted Static Mesh Foliage instance using compact replacement settings for the mesh, optional local transform offset, and scale preservation. The manager routes the replacement internally, preserves custom data and per-instance gameplay values, and recreates generated replacement sources for later streaming and load operations. Authored Foliage Types are never modified: a replaced foliage instance moves to a target the manager owns on the Instanced Foliage Actor.
 - **World Partition Runtime Actors:** **Get World Partition Runtime Actors** returns the currently live managed actors, not just their count.
 - **World Partition Runtime Actors:** **Is Managed Actor Removal In Progress** lets a managed actor tell, from **End Play**, that EMSAddons is removing it rather than gameplay destroying it. Documented alongside a pattern for NPCs that own an AI Controller.
 - **Autosave and Checkpoints:** **Autosave When Leaving Map** optionally saves the current EMS Player/Level data synchronously immediately before normal map travel. It reuses EMS's native save preparation and Multi-Level merge path, ignores the minimum autosave interval, and skips safely during checkpoint travel, active EMS tasks, blockers, or unsafe streaming.
 
 ### Improved
 
+- **Instanced Meshes and Foliage:** streamlined the Blueprint gameplay-state API to tagged value operations. The complete per-instance gameplay-data container remains internal to C++ and persistence.
 - **World Partition Runtime Actors:** managed Pawns now clean up their orphaned non-player Controller automatically when EMSAddons removes them. Restored Pawns continue to use Unreal's native **Auto Possess AI** behavior; no controller persistence or extra NPC system is added.
 - **Instanced Meshes and Foliage:** merged the separate **EMS Foliage Manager** into **EMS Instance Manager**. One manager now handles ISM, HISM, and painted Static Mesh Foliage, reducing setup to a single persistent manager. Existing development levels using an **EMS Foliage Manager** must replace it with an **EMS Instance Manager**.
 
@@ -21,6 +23,7 @@
 - **World Partition Runtime Actors:** managed actors no longer disappear while the world around them stays loaded. Cell ownership is now treated as coverage — an actor stays live for as long as any visible supported cell covers its location — instead of binding it to one chosen cell whose visibility could change independently.
 - **World Partition Runtime Actors:** spawning while a save or load is in progress, including the initial World Partition load, is now rejected with a warning instead of producing an actor that the load immediately destroys.
 - **World Partition Runtime Actors:** a load that destroys live managed actors now says so in the log.
+- **Autosave and Checkpoints:** **EMS Checkpoint** now implements EMS's Actor Save Interface, so it participates in normal (non-checkpoint) Save/Load Game Actors like any other addon actor. Previously it did not, so a **Trigger Once** checkpoint's already-activated state existed only in memory: a later unrelated save superseded the one stored checkpoint record, and reloading let the player trigger the same checkpoint again.
 
 ## 0.2.0 - 2026-08-11
 

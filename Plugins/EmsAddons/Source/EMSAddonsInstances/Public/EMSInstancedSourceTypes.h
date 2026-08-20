@@ -6,6 +6,8 @@
 #include "UObject/SoftObjectPath.h"
 #include "EMSInstancedSourceTypes.generated.h"
 
+class UStaticMesh;
+
 namespace EMSAddons
 {
 	/** Actors and components carrying this tag are excluded from instanced-source persistence. */
@@ -103,45 +105,26 @@ struct EMSADDONSINSTANCES_API FEMSInstanceKey
 	}
 };
 
-/**
- * One gameplay float on an instance, addressed by gameplay tag.
- *
- * This is deliberately separate from per-instance custom data. Custom data is
- * uploaded to the material and is limited to whatever float count the component
- * declares, whereas this carries pure gameplay state such as remaining tree
- * health and never touches rendering.
- */
-USTRUCT(BlueprintType)
+/** One gameplay float on an instance, addressed by gameplay tag. */
+USTRUCT()
 struct EMSADDONSINSTANCES_API FEMSInstanceGameplayValue
 {
 	GENERATED_BODY()
 
-	UPROPERTY(
-		SaveGame,
-		EditAnywhere,
-		BlueprintReadWrite,
-		Category = "EMS Addons|Instanced")
+	UPROPERTY(SaveGame)
 	FGameplayTag Tag;
 
-	UPROPERTY(
-		SaveGame,
-		EditAnywhere,
-		BlueprintReadWrite,
-		Category = "EMS Addons|Instanced")
+	UPROPERTY(SaveGame)
 	float Value = 0.0f;
 };
 
-/** The sparse set of gameplay values carried by a single instance. */
-USTRUCT(BlueprintType)
+/** Internal sparse set of gameplay values carried by a single instance. */
+USTRUCT()
 struct EMSADDONSINSTANCES_API FEMSInstanceGameplayData
 {
 	GENERATED_BODY()
 
-	UPROPERTY(
-		SaveGame,
-		EditAnywhere,
-		BlueprintReadWrite,
-		Category = "EMS Addons|Instanced")
+	UPROPERTY(SaveGame)
 	TArray<FEMSInstanceGameplayValue> Values;
 
 	bool IsEmpty() const
@@ -184,6 +167,61 @@ struct EMSADDONSINSTANCES_API FEMSInstanceGameplayData
 			{
 				return Entry.Tag == Tag;
 			}) > 0;
+	}
+};
+
+/**
+ * High-level replacement settings used by Replace Instance.
+ *
+ * Transform Offset is applied in the original instance's local space. By
+ * default the original per-instance scale is preserved, including foliage
+ * random scale. Disable Preserve Scale to start from 1,1,1 before the offset is
+ * composed, making Transform Offset.Scale the replacement's effective scale.
+ */
+USTRUCT(BlueprintType)
+struct EMSADDONSINSTANCES_API FEMSInstanceReplacement
+{
+	GENERATED_BODY()
+
+	/** Static Mesh used by the replacement instance. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Replacement")
+	TObjectPtr<UStaticMesh> Mesh = nullptr;
+
+	/** Optional local transform adjustment applied to the replacement. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Replacement")
+	FTransform TransformOffset = FTransform::Identity;
+
+	/** Preserve the original instance's scale before applying Transform Offset. */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "Replacement")
+	bool bPreserveScale = true;
+};
+
+/**
+ * One runtime-created replacement source.
+ *
+ * Replacement sources are recreated before discovery when their authored
+ * template becomes available, so an automatically created target survives
+ * ordinary level streaming and a later EMS load without Blueprint setup.
+ */
+USTRUCT()
+struct EMSADDONSINSTANCES_API FEMSInstanceReplacementSource
+{
+	GENERATED_BODY()
+
+	UPROPERTY(SaveGame)
+	FEMSInstanceSourceId TemplateSourceId;
+
+	UPROPERTY(SaveGame)
+	FSoftObjectPath ReplacementMeshPath;
+
+	UPROPERTY(SaveGame)
+	FName GeneratedSourceName;
+
+	bool IsValid() const
+	{
+		return TemplateSourceId.IsValid()
+			&& ReplacementMeshPath.IsValid()
+			&& !GeneratedSourceName.IsNone();
 	}
 };
 

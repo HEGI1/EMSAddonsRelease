@@ -80,53 +80,55 @@ public:
 			DisplayName = "Get EMS Instanced Source Manager"))
 	static AEMSInstancedSourceManager* GetInstancedSourceManager(
 		const UObject* WorldContextObject,
+		UPARAM(meta = (AllowAbstract = "false"))
 		TSubclassOf<AEMSInstancedSourceManager> ManagerClass);
 
 	/**
-	 * Per-instance gameplay data.
+	 * Per-instance gameplay values.
 	 *
 	 * Instances are addressed the way a line trace reports them, by component
 	 * plus current instance index. The index is only used to resolve the current
 	 * transform key, so it never has to survive a save and a move changes the
 	 * instance's persistent identity.
 	 */
-
-	UFUNCTION(BlueprintPure, Category = "EMS Addons|Instanced|Gameplay Data")
+	UFUNCTION(BlueprintPure, Category = "EMS Addons|Instanced|Gameplay Values")
 	bool GetInstanceGameplayValue(
 		const UInstancedStaticMeshComponent* Component,
 		int32 InstanceIndex,
 		FGameplayTag Tag,
 		float& OutValue) const;
 
-	UFUNCTION(BlueprintPure, Category = "EMS Addons|Instanced|Gameplay Data")
-	bool GetInstanceGameplayData(
-		const UInstancedStaticMeshComponent* Component,
-		int32 InstanceIndex,
-		FEMSInstanceGameplayData& OutGameplayData) const;
-
-	UFUNCTION(BlueprintCallable, Category = "EMS Addons|Instanced|Gameplay Data")
+	UFUNCTION(BlueprintCallable, Category = "EMS Addons|Instanced|Gameplay Values")
 	bool SetInstanceGameplayValue(
 		UInstancedStaticMeshComponent* Component,
 		int32 InstanceIndex,
 		FGameplayTag Tag,
 		float Value);
 
-	UFUNCTION(BlueprintCallable, Category = "EMS Addons|Instanced|Gameplay Data")
-	bool SetInstanceGameplayData(
-		UInstancedStaticMeshComponent* Component,
-		int32 InstanceIndex,
-		const FEMSInstanceGameplayData& GameplayData);
-
-	UFUNCTION(BlueprintCallable, Category = "EMS Addons|Instanced|Gameplay Data")
+	UFUNCTION(BlueprintCallable, Category = "EMS Addons|Instanced|Gameplay Values")
 	bool RemoveInstanceGameplayValue(
 		UInstancedStaticMeshComponent* Component,
 		int32 InstanceIndex,
 		FGameplayTag Tag);
 
-	UFUNCTION(BlueprintCallable, Category = "EMS Addons|Instanced|Gameplay Data")
+	UFUNCTION(
+		BlueprintCallable,
+		Category = "EMS Addons|Instanced|Gameplay Values",
+		meta = (DisplayName = "Clear Instance Gameplay Values"))
 	bool ClearInstanceGameplayData(
 		UInstancedStaticMeshComponent* Component,
 		int32 InstanceIndex);
+
+	/** Bulk gameplay-data access remains available to C++ but is intentionally hidden from Blueprint. */
+	bool GetInstanceGameplayData(
+		const UInstancedStaticMeshComponent* Component,
+		int32 InstanceIndex,
+		FEMSInstanceGameplayData& OutGameplayData) const;
+
+	bool SetInstanceGameplayData(
+		UInstancedStaticMeshComponent* Component,
+		int32 InstanceIndex,
+		const FEMSInstanceGameplayData& GameplayData);
 
 	virtual void ActorPreSave_Implementation() override;
 	virtual void ActorPreLoad_Implementation() override;
@@ -212,6 +214,14 @@ protected:
 	void RegisterSource(
 		const FEMSInstanceSourceId& SourceId,
 		UInstancedStaticMeshComponent* Component);
+
+	/** Returns the currently registered persistent source identity for a component. */
+	bool FindRegisteredSourceId(
+		const UInstancedStaticMeshComponent* Component,
+		FEMSInstanceSourceId& OutSourceId) const;
+
+	/** Whether this machine may change authoritative instance state. */
+	bool HasInstanceAuthority() const;
 
 	/**
 	 * Whether an owner's object path still identifies the same object next session.
@@ -342,26 +352,12 @@ private:
 
 	void ForgetSource(const FEMSInstanceSourceId& SourceId);
 
-	/**
-	 * Applies one reconciliation pass to a component.
-	 *
-	 * Painted foliage needs the same three operations an ordinary HISM does, so
-	 * this is shared rather than overridden. Removal indices arrive sorted in
-	 * reverse, which is what the second RemoveInstances parameter asserts.
-	 */
+	/** Applies one reconciliation pass to a component. */
 	bool ApplyInstanceMutations(
 		UInstancedStaticMeshComponent* Component,
 		const TArray<int32>& InstanceIndicesToRemove,
 		const TArray<FTransform>& TransformsToAdd,
 		bool bWorldSpace) const;
-
-	/**
-	 * Whether this machine may change authoritative instance state.
-	 *
-	 * Applies the shared EMSAddons::HasPersistenceAuthority rule to the net mode
-	 * this manager reports.
-	 */
-	bool HasInstanceAuthority() const;
 
 	const FInstanceKeyCache* GetInstanceKeyCache(
 		const UInstancedStaticMeshComponent* Component,

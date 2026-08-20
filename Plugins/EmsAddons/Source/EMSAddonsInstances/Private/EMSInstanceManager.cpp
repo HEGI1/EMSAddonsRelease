@@ -1,15 +1,18 @@
-//Easy Multi Save Addons - Copyright (C) 2026 by Michael Hegemann.
+﻿//Easy Multi Save Addons - Copyright (C) 2026 by Michael Hegemann.
 #include "EMSInstanceManager.h"
 
 #include "Components/HierarchicalInstancedStaticMeshComponent.h"
 #include "Components/InstancedStaticMeshComponent.h"
+#include "Components/SceneComponent.h"
 #include "Engine/Level.h"
 #include "Engine/StaticMesh.h"
 #include "Engine/World.h"
 #include "FoliageType_InstancedStaticMesh.h"
 #include "InstancedFoliage.h"
 #include "InstancedFoliageActor.h"
+#include "Misc/Crc.h"
 #include "ProfilingDebugging/CpuProfilerTrace.h"
+#include "UObject/UObjectGlobals.h"
 #include "WorldPartition/HLOD/HLODInstancedStaticMeshComponent.h"
 
 namespace
@@ -112,6 +115,441 @@ void AEMSInstanceManager::CollectFoliageSources(
 		});
 }
 
+
+UInstancedStaticMeshComponent* AEMSInstanceManager::FindTemplateComponent(
+	const FEMSInstanceSourceId& SourceId) const
+{
+	if (!SourceId.IsValid())
+	{
+		return nullptr;
+	}
+
+	AActor* SourceOwner = Cast<AActor>(SourceId.OwnerPath.ResolveObject());
+	if (!SourceOwner)
+	{
+		return nullptr;
+	}
+
+	if (SourceId.SourceKind == EEMSInstanceSourceKind::Foliage)
+	{
+		AInstancedFoliageActor* FoliageActor =
+			Cast<AInstancedFoliageActor>(SourceOwner);
+		if (!FoliageActor)
+		{
+			return nullptr;
+		}
+
+		UInstancedStaticMeshComponent* FoundComponent = nullptr;
+		FoliageActor->ForEachFoliageInfo(
+			[&](UFoliageType* FoliageType, FFoliageInfo& Info)
+			{
+				UFoliageType_InstancedStaticMesh* StaticMeshType =
+					Cast<UFoliageType_InstancedStaticMesh>(FoliageType);
+				UStaticMesh* Mesh = StaticMeshType
+					? StaticMeshType->GetStaticMesh()
+					: nullptr;
+				if (!Mesh || FSoftObjectPath(Mesh) != SourceId.MeshPath)
+				{
+					return true;
+				}
+
+				const FName SourceName(
+					*UWorld::RemovePIEPrefix(FoliageType->GetPathName()));
+				if (SourceName == SourceId.SourceName)
+				{
+					FoundComponent = Info.GetComponent();
+					return false;
+				}
+				return true;
+			});
+		return FoundComponent;
+	}
+
+	TArray<UInstancedStaticMeshComponent*> Components;
+	SourceOwner->GetComponents(Components);
+	for (UInstancedStaticMeshComponent* Component : Components)
+	{
+		if (!Component
+			|| Component->GetFName() != SourceId.SourceName
+			|| !Component->GetStaticMesh()
+			|| FSoftObjectPath(Component->GetStaticMesh()) != SourceId.MeshPath)
+		{
+			continue;
+		}
+
+		const EEMSInstanceSourceKind Kind =
+			Component->IsA<UHierarchicalInstancedStaticMeshComponent>()
+				? EEMSInstanceSourceKind::HISM
+				: EEMSInstanceSourceKind::ISM;
+		if (Kind == SourceId.SourceKind)
+		{
+			return Component;
+		}
+	}
+	return nullptr;
+}
+
+UClass* AEMSInstanceManager::GetReplacementComponentClass(
+	const UInstancedStaticMeshComponent* SourceComponent)
+{
+	if (!SourceComponent)
+	{
+		return nullptr;
+	}
+
+	// A generated target is always a plain engine component, never a Foliage
+	// module one. Discovery deliberately ignores that module so a component is
+	// never registered under two identities, and the engine offers no runtime
+	// way to add a Foliage Type to an Instanced Foliage Actor at all - every
+	// entry point for that is editor-only. Keeping the target outside the
+	// foliage system is also what leaves the authored Foliage Type untouched.
+	const UPackage* ClassPackage = SourceComponent->GetClass()->GetPackage();
+	if (ClassPackage && ClassPackage->GetFName() == FoliagePackageName)
+	{
+		return UHierarchicalInstancedStaticMeshComponent::StaticClass();
+	}
+	return SourceComponent->GetClass();
+}
+
+UInstancedStaticMeshComponent*
+AEMSInstanceManager::FindCompatibleReplacementSource(
+	const UInstancedStaticMeshComponent* SourceComponent,
+	UStaticMesh* ReplacementMesh) const
+{
+	AActor* SourceOwner = SourceComponent ? SourceComponent->GetOwner() : nullptr;
+	const UClass* ComponentClass = GetReplacementComponentClass(SourceComponent);
+	if (!SourceOwner || !ReplacementMesh || !ComponentClass)
+	{
+		return nullptr;
+	}
+
+	TArray<UInstancedStaticMeshComponent*> Components;
+	SourceOwner->GetComponents(Components);
+	for (UInstancedStaticMeshComponent* Component : Components)
+	{
+		if (Component == SourceComponent
+			|| !IsSupportedSource(Component)
+			|| Component->GetStaticMesh() != ReplacementMesh
+			|| Component->GetClass() != ComponentClass
+			|| Component->NumCustomDataFloats !=
+				SourceComponent->NumCustomDataFloats)
+		{
+			continue;
+		}
+		return Component;
+	}
+	return nullptr;
+}
+FName AEMSInstanceManager::MakeReplacementSourceName(
+	const FEMSInstanceSourceId& SourceId,
+	const UStaticMesh* ReplacementMesh) const
+{
+	const FString Key = FString::Printf(
+		TEXT("%s|%s|%d"),
+		*SourceId.SourceName.ToString(),
+		ReplacementMesh ? *ReplacementMesh->GetPathName() : TEXT("None"),
+		static_cast<int32>(SourceId.SourceKind));
+	return FName(*FString::Printf(
+		TEXT("EMSReplacement_%08X"),
+		FCrc::StrCrc32(*Key)));
+}
+
+UInstancedStaticMeshComponent* AEMSInstanceManager::EnsureReplacementSource(
+	const FEMSInstanceReplacementSource& Descriptor,
+	UInstancedStaticMeshComponent* KnownTemplate)
+{
+	if (!Descriptor.IsValid())
+	{
+		return nullptr;
+	}
+
+	UStaticMesh* ReplacementMesh =
+		Cast<UStaticMesh>(Descriptor.ReplacementMeshPath.ResolveObject());
+	if (!ReplacementMesh)
+	{
+		ReplacementMesh =
+			Cast<UStaticMesh>(Descriptor.ReplacementMeshPath.TryLoad());
+	}
+	if (!ReplacementMesh)
+	{
+		return nullptr;
+	}
+
+	UInstancedStaticMeshComponent* SourceComponent = KnownTemplate
+		? KnownTemplate
+		: FindTemplateComponent(Descriptor.TemplateSourceId);
+	AActor* SourceOwner = SourceComponent ? SourceComponent->GetOwner() : nullptr;
+	UClass* ComponentClass = GetReplacementComponentClass(SourceComponent);
+	if (!SourceOwner || !ComponentClass)
+	{
+		return nullptr;
+	}
+
+	TArray<UInstancedStaticMeshComponent*> Components;
+	SourceOwner->GetComponents(Components);
+	for (UInstancedStaticMeshComponent* Component : Components)
+	{
+		if (Component && Component->GetFName() == Descriptor.GeneratedSourceName)
+		{
+			return Component->GetStaticMesh() == ReplacementMesh
+				? Component
+				: nullptr;
+		}
+	}
+
+	// The source only serves as an archetype when the generated component is of
+	// its own class. A foliage source is deliberately replaced by a plain engine
+	// component, and an archetype of a different class is not valid.
+	UInstancedStaticMeshComponent* ReplacementComponent =
+		NewObject<UInstancedStaticMeshComponent>(
+			SourceOwner,
+			ComponentClass,
+			Descriptor.GeneratedSourceName,
+			RF_NoFlags,
+			ComponentClass == SourceComponent->GetClass()
+				? SourceComponent
+				: nullptr);
+	if (!ReplacementComponent)
+	{
+		return nullptr;
+	}
+
+	ReplacementComponent->CreationMethod = EComponentCreationMethod::Instance;
+	ReplacementComponent->ClearInstances();
+	ReplacementComponent->SetStaticMesh(ReplacementMesh);
+	// Set explicitly rather than inherited, because the foliage case has no
+	// archetype to inherit it from.
+	ReplacementComponent->SetNumCustomDataFloats(
+		SourceComponent->NumCustomDataFloats);
+	if (USceneComponent* AttachParent = SourceComponent->GetAttachParent())
+	{
+		ReplacementComponent->SetupAttachment(
+			AttachParent,
+			SourceComponent->GetAttachSocketName());
+	}
+	ReplacementComponent->SetRelativeTransform(
+		SourceComponent->GetRelativeTransform());
+	SourceOwner->AddInstanceComponent(ReplacementComponent);
+	ReplacementComponent->OnComponentCreated();
+	ReplacementComponent->RegisterComponent();
+	return ReplacementComponent;
+}
+void AEMSInstanceManager::EnsureSavedReplacementSources()
+{
+	const int32 SourceCount = FMath::Min(
+		SavedReplacementSources.Num(),
+		MaxReplacementSources);
+	if (SourceCount <= 0)
+	{
+		return;
+	}
+
+	int32 PreviousResolved = INDEX_NONE;
+	for (int32 Pass = 0; Pass < SourceCount; ++Pass)
+	{
+		int32 Resolved = 0;
+		for (int32 Index = 0; Index < SourceCount; ++Index)
+		{
+			const FEMSInstanceReplacementSource& Descriptor =
+				SavedReplacementSources[Index];
+			if (!Descriptor.IsValid()
+				|| EnsureReplacementSource(Descriptor))
+			{
+				++Resolved;
+			}
+		}
+
+		if (Resolved == SourceCount || Resolved == PreviousResolved)
+		{
+			break;
+		}
+		PreviousResolved = Resolved;
+	}
+}
+
+UInstancedStaticMeshComponent*
+AEMSInstanceManager::GetOrCreateReplacementSource(
+	const FEMSInstanceSourceId& SourceId,
+	UInstancedStaticMeshComponent* SourceComponent,
+	UStaticMesh* ReplacementMesh)
+{
+	if (UInstancedStaticMeshComponent* Existing =
+		FindCompatibleReplacementSource(SourceComponent, ReplacementMesh))
+	{
+		return Existing;
+	}
+
+	const FSoftObjectPath ReplacementPath(ReplacementMesh);
+	for (const FEMSInstanceReplacementSource& Descriptor :
+		SavedReplacementSources)
+	{
+		if (Descriptor.TemplateSourceId == SourceId
+			&& Descriptor.ReplacementMeshPath == ReplacementPath)
+		{
+			return EnsureReplacementSource(Descriptor, SourceComponent);
+		}
+	}
+
+	if (SavedReplacementSources.Num() >= MaxReplacementSources)
+	{
+		return nullptr;
+	}
+
+	FEMSInstanceReplacementSource& Descriptor =
+		SavedReplacementSources.AddDefaulted_GetRef();
+	Descriptor.TemplateSourceId = SourceId;
+	Descriptor.ReplacementMeshPath = ReplacementPath;
+	Descriptor.GeneratedSourceName =
+		MakeReplacementSourceName(SourceId, ReplacementMesh);
+
+	UInstancedStaticMeshComponent* Created =
+		EnsureReplacementSource(Descriptor, SourceComponent);
+	if (!Created)
+	{
+		SavedReplacementSources.Pop();
+	}
+	return Created;
+}
+
+void AEMSInstanceManager::ReadInstanceCustomData(
+	const UInstancedStaticMeshComponent* Component,
+	const int32 InstanceIndex,
+	TArray<float>& OutCustomData)
+{
+	OutCustomData.Reset();
+	if (!Component || Component->NumCustomDataFloats <= 0)
+	{
+		return;
+	}
+
+	OutCustomData.Init(0.0f, Component->NumCustomDataFloats);
+	const int32 DataOffset = InstanceIndex * Component->NumCustomDataFloats;
+	if (Component->PerInstanceSMCustomData.IsValidIndex(
+		DataOffset + Component->NumCustomDataFloats - 1))
+	{
+		FMemory::Memcpy(
+			OutCustomData.GetData(),
+			Component->PerInstanceSMCustomData.GetData() + DataOffset,
+			sizeof(float) * Component->NumCustomDataFloats);
+	}
+}
+
+bool AEMSInstanceManager::ReplaceInstance(
+	UInstancedStaticMeshComponent* Component,
+	const int32 InstanceIndex,
+	UStaticMesh* ReplacementMesh)
+{
+	if (!HasInstanceAuthority()
+		|| !IsValid(Component)
+		|| !ReplacementMesh
+		|| !Component->GetStaticMesh()
+		|| InstanceIndex < 0
+		|| InstanceIndex >= Component->GetInstanceCount())
+	{
+		return false;
+	}
+
+	if (Component->GetStaticMesh() == ReplacementMesh)
+	{
+		return true;
+	}
+
+	FEMSInstanceSourceId SourceId;
+	if (!FindRegisteredSourceId(Component, SourceId))
+	{
+		RefreshLoadedSources();
+		if (!FindRegisteredSourceId(Component, SourceId))
+		{
+			return false;
+		}
+	}
+
+	FTransform WorldTransform;
+	if (!Component->GetInstanceTransform(
+		InstanceIndex,
+		WorldTransform,
+		true))
+	{
+		return false;
+	}
+
+	TArray<float> CustomData;
+	ReadInstanceCustomData(Component, InstanceIndex, CustomData);
+
+	FEMSInstanceGameplayData GameplayData;
+	const bool bHasGameplayData = GetInstanceGameplayData(
+		Component,
+		InstanceIndex,
+		GameplayData);
+
+	UInstancedStaticMeshComponent* ReplacementComponent =
+		GetOrCreateReplacementSource(
+			SourceId,
+			Component,
+			ReplacementMesh);
+	if (!ReplacementComponent)
+	{
+		return false;
+	}
+
+	// The generated source must be discovered while it is still empty so its
+	// authored baseline is zero. Later capture then records the replacement as
+	// the ordinary remove-plus-add delta the persistence engine already uses.
+	RefreshLoadedSources();
+
+	FEMSInstanceSourceId ReplacementSourceId;
+	if (!FindRegisteredSourceId(
+		ReplacementComponent,
+		ReplacementSourceId)
+		|| ReplacementComponent->NumCustomDataFloats !=
+			Component->NumCustomDataFloats)
+	{
+		return false;
+	}
+
+	const int32 ReplacementIndex =
+		ReplacementComponent->AddInstance(WorldTransform, true);
+	if (ReplacementIndex == INDEX_NONE)
+	{
+		return false;
+	}
+
+	if (!CustomData.IsEmpty()
+		&& !ReplacementComponent->SetCustomData(
+			ReplacementIndex,
+			CustomData,
+			true))
+	{
+		ReplacementComponent->RemoveInstance(ReplacementIndex);
+		return false;
+	}
+
+	if (bHasGameplayData
+		&& !GameplayData.IsEmpty()
+		&& !SetInstanceGameplayData(
+			ReplacementComponent,
+			ReplacementIndex,
+			GameplayData))
+	{
+		ReplacementComponent->RemoveInstance(ReplacementIndex);
+		return false;
+	}
+
+	if (!Component->RemoveInstance(InstanceIndex))
+	{
+		if (bHasGameplayData && !GameplayData.IsEmpty())
+		{
+			ClearInstanceGameplayData(
+				ReplacementComponent,
+				ReplacementIndex);
+		}
+		ReplacementComponent->RemoveInstance(ReplacementIndex);
+		return false;
+	}
+
+	return true;
+}
+
 void AEMSInstanceManager::CollectSources()
 {
 	TRACE_CPUPROFILER_EVENT_SCOPE(EMSAddons_CollectInstancedSources);
@@ -120,6 +558,11 @@ void AEMSInstanceManager::CollectSources()
 	{
 		return;
 	}
+
+	// Saved replacement descriptors are loaded on the persistent manager before
+	// restore. Recreate their target sources first so this discovery pass sees an
+	// empty authored baseline and the normal delta engine can restore additions.
+	EnsureSavedReplacementSources();
 
 	TArray<UInstancedStaticMeshComponent*> Components;
 	for (ULevel* Level : World->GetLevels())
@@ -138,15 +581,16 @@ void AEMSInstanceManager::CollectSources()
 				continue;
 			}
 
-			// An Instanced Foliage Actor owns nothing but Foliage-module
-			// components, every one of which the component pass rejects, so it is
-			// handled entirely by the foliage pass. Running both over it would
-			// only count its owner stability a second time.
+			// An Instanced Foliage Actor owns Foliage-module components and is
+			// handled through its foliage infos so those sources retain world-space
+			// identity. It then falls through to the ordinary component pass rather
+			// than being skipped, because generated replacement sources live on it
+			// as plain engine components. IsSupportedSource excludes everything the
+			// Foliage module owns, so no component is seen by both passes.
 			if (AInstancedFoliageActor* FoliageActor =
 				Cast<AInstancedFoliageActor>(Actor))
 			{
 				CollectFoliageSources(FoliageActor);
-				continue;
 			}
 
 			Components.Reset();

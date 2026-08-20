@@ -23,6 +23,45 @@
 
 namespace
 {
+	/**
+	 * Whether two transforms describe the same stored instance.
+	 *
+	 * Instance transforms live in a float matrix, so a saved double transform
+	 * written back and read again is not bitwise identical, and the rotation is
+	 * re-derived from the matrix rather than round-tripped. The canonical key
+	 * quantizes that value, and any quantization has edges, so a drift far too
+	 * small to see can still land one step away and read as a different instance.
+	 *
+	 * The location tolerance therefore scales with distance from the origin,
+	 * because that is what float storage does: the representable step is about
+	 * 0.001 units at 10,000 out and about 0.06 at 1,000,000. It is capped at half
+	 * the tenth-of-a-unit granularity the canonical key itself uses, so this is
+	 * never less discriminating than the key it backs up - two instances the key
+	 * can tell apart are never merged here.
+	 */
+	bool IsSameStoredInstance(const FTransform& Left, const FTransform& Right)
+	{
+		constexpr double FloatRelativeStep = 4.0e-6;
+		constexpr double MinLocationTolerance = 0.001;
+		constexpr double MaxLocationTolerance = 0.05;
+		constexpr double RotationTolerance = 1.0e-4;
+		constexpr double ScaleTolerance = 1.0e-4;
+
+		const FVector LeftLocation = Left.GetLocation();
+		const double Magnitude = FMath::Max3(
+			FMath::Abs(LeftLocation.X),
+			FMath::Abs(LeftLocation.Y),
+			FMath::Abs(LeftLocation.Z));
+		const double LocationTolerance = FMath::Clamp(
+			Magnitude * FloatRelativeStep,
+			MinLocationTolerance,
+			MaxLocationTolerance);
+
+		return LeftLocation.Equals(Right.GetLocation(), LocationTolerance)
+			&& Left.GetRotation().Equals(Right.GetRotation(), RotationTolerance)
+			&& Left.GetScale3D().Equals(Right.GetScale3D(), ScaleTolerance);
+	}
+
 	bool CustomDataEqual(const TArray<float>& Left, const TArray<float>& Right)
 	{
 		if (Left.Num() != Right.Num())
@@ -215,6 +254,22 @@ void AEMSInstancedSourceManager::RegisterSource(
 
 	LoadedSources.Add(SourceId, Component);
 	SourceIdsByComponent.Add(FObjectKey(Component), SourceId);
+}
+
+bool AEMSInstancedSourceManager::FindRegisteredSourceId(
+	const UInstancedStaticMeshComponent* Component,
+	FEMSInstanceSourceId& OutSourceId) const
+{
+	const FEMSInstanceSourceId* Found = Component
+		? SourceIdsByComponent.Find(FObjectKey(Component))
+		: nullptr;
+	if (!Found)
+	{
+		return false;
+	}
+
+	OutSourceId = *Found;
+	return true;
 }
 
 bool AEMSInstancedSourceManager::IsStableSourceOwner(const AActor* SourceOwner)
@@ -998,22 +1053,65 @@ bool AEMSInstancedSourceManager::ReconcileSource(
 	FResolvedSourceState Verified = bHasInstanceMutations
 		? BuildResolvedSourceState(Component, bWorldSpace)
 		: MoveTemp(Current);
+	// Verification asks whether the component accepted the mutations, not whether
+	// it stored them bit-for-bit. An instanced component keeps transforms as a
+	// float matrix, so writing a saved transform back and reading it returns a
+	// value that differs in the last bits, and the quaternion is re-derived from
+	// the matrix rather than round-tripped. Canonical rotation is quantized at
+	// 1e-6, which that error can straddle: the transform is unchanged to well
+	// under a thousandth of a unit while its key lands one step away. Comparing
+	// keys alone therefore reported a perfectly restored source as skipped.
+	// The transform comparison is the authority; the key check is kept because it
+	// is exact whenever the write was in fact lossless.
 	bool bMatchesTarget = Verified.Instances.Num() == Target.Instances.Num();
 	for (int32 Index = 0;
 		bMatchesTarget && Index < Target.Instances.Num();
 		++Index)
 	{
-		bMatchesTarget =
-			Verified.Instances[Index].Canonical
-				== Target.Instances[Index].Canonical;
+		const FResolvedInstance& VerifiedInstance = Verified.Instances[Index];
+		const FResolvedInstance& TargetInstance = Target.Instances[Index];
+		bMatchesTarget = VerifiedInstance.Canonical == TargetInstance.Canonical
+			|| IsSameStoredInstance(
+				VerifiedInstance.Transform,
+				TargetInstance.Transform);
 	}
 	if (!bMatchesTarget)
 	{
+		// The counts and the first differing key are logged because this failure
+		// is otherwise indistinguishable between its two causes: the component
+		// rejected a mutation, or it accepted one and read back a transform that
+		// canonicalizes differently. Space is quoted so a local/world mix-up is
+		// visible at a glance.
+		FString Detail = FString::Printf(
+			TEXT(" Space=%s CurrentNum=%d TargetNum=%d"),
+			bWorldSpace ? TEXT("World") : TEXT("Local"),
+			Verified.Instances.Num(),
+			Target.Instances.Num());
+		for (int32 Index = 0; Index < Target.Instances.Num(); ++Index)
+		{
+			if (!Verified.Instances.IsValidIndex(Index))
+			{
+				break;
+			}
+			if (!(Verified.Instances[Index].Canonical
+				== Target.Instances[Index].Canonical))
+			{
+				Detail += FString::Printf(
+					TEXT(" FirstMismatchAt=%d Got=%s Wanted=%s"),
+					Index,
+					*Verified.Instances[Index].Transform.ToString(),
+					*Target.Instances[Index].Transform.ToString());
+				break;
+			}
+		}
+
 		LogSourceIssue(
 			SourceId,
-			LOCTEXT(
-				"InstancedTargetVerificationFailed",
-				"The source did not match the saved target after reconciliation."));
+			FText::Format(
+				LOCTEXT(
+					"InstancedTargetVerificationFailed",
+					"The source did not match the saved target after reconciliation.{0}"),
+				FText::FromString(Detail)));
 		return false;
 	}
 

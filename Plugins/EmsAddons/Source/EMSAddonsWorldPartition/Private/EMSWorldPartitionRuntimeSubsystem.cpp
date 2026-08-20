@@ -1,6 +1,8 @@
 //Easy Multi Save Addons - Copyright (C) 2026 by Michael Hegemann.
 #include "EMSWorldPartitionRuntimeSubsystem.h"
 
+#include "CollisionQueryParams.h"
+#include "Components/PrimitiveComponent.h"
 #include "EMSActorSaveInterface.h"
 #include "EMSAddonsActorBinary.h"
 #include "EMSAddonsWorldPartition.h"
@@ -42,6 +44,75 @@ namespace
 		{
 			Controller->Destroy();
 		}
+	}
+
+	bool IsCellVisible(UWorld* World, const FGuid& CellGuid)
+	{
+		if (!IsValid(World) || !CellGuid.IsValid())
+		{
+			return !CellGuid.IsValid();
+		}
+		for (ULevelStreaming* StreamingLevel : World->GetStreamingLevels())
+		{
+			const UWorldPartitionLevelStreamingDynamic* WorldPartitionStreaming =
+				Cast<UWorldPartitionLevelStreamingDynamic>(StreamingLevel);
+			const UWorldPartitionRuntimeLevelStreamingCell* Cell = WorldPartitionStreaming
+				? Cast<UWorldPartitionRuntimeLevelStreamingCell>(WorldPartitionStreaming->GetWorldPartitionRuntimeCell())
+				: nullptr;
+			if (Cell && Cell->GetGuid() == CellGuid)
+			{
+				return StreamingLevel->GetLevelStreamingState() == ELevelStreamingState::LoadedVisible;
+			}
+		}
+		return false;
+	}
+
+	bool IsActorSupportedByLevel(UWorld* World, AActor* Actor, const ULevel* Level)
+	{
+		if (!IsValid(World) || !IsValid(Actor) || !IsValid(Level))
+		{
+			return false;
+		}
+
+		//A Pawn riding a moving base (lift, vehicle) is supported by that base's Level.
+		if (const APawn* Pawn = Cast<APawn>(Actor))
+		{
+			if (const AActor* BaseActor = APawn::GetMovementBaseActor(Pawn))
+			{
+				if (BaseActor->GetLevel() == Level)
+				{
+					return true;
+				}
+			}
+		}
+
+		const UPrimitiveComponent* RootPrimitive = Cast<UPrimitiveComponent>(Actor->GetRootComponent());
+		if (!RootPrimitive || !RootPrimitive->IsSimulatingPhysics())
+		{
+			return false;
+		}
+
+		//Otherwise, trace a short distance below the bounds for resting contact: 2 units of
+		//overlap tolerance plus 20 units of reach, enough to catch normal physics settling
+		//jitter without reaching far enough to hit unrelated geometry below a gap.
+		FVector BoundsOrigin;
+		FVector BoundsExtent;
+		Actor->GetActorBounds(true, BoundsOrigin, BoundsExtent, false);
+		const FVector Start(BoundsOrigin.X, BoundsOrigin.Y, BoundsOrigin.Z - BoundsExtent.Z + 2.0);
+		const FVector End = Start - FVector(0.0, 0.0, 22.0);
+		FHitResult Hit;
+		const FCollisionQueryParams QueryParams(NAME_None, false, Actor);
+		const FCollisionObjectQueryParams ObjectParams(
+			ECC_TO_BITFIELD(ECC_WorldStatic)
+			| ECC_TO_BITFIELD(ECC_WorldDynamic)
+			| ECC_TO_BITFIELD(ECC_PhysicsBody));
+		if (!World->LineTraceSingleByObjectType(Hit, Start, End, ObjectParams, QueryParams))
+		{
+			return false;
+		}
+		const UPrimitiveComponent* HitComponent = Hit.GetComponent();
+		const AActor* SupportActor = HitComponent ? HitComponent->GetOwner() : nullptr;
+		return SupportActor && SupportActor->GetLevel() == Level;
 	}
 }
 
@@ -560,6 +631,7 @@ bool UEMSWorldPartitionRuntimeSubsystem::CaptureActor(const FGuid& LocalId, AAct
 	Candidate.SavedTransform = Actor->GetActorTransform();
 	Candidate.RecordVersion = FEMSWorldPartitionRuntimeActorRecord::CurrentVersion;
 	Candidate.ActorBinaryData = MoveTemp(CapturedBinary);
+	Candidate.RequiredCellGuid = FGuid();
 	*Record = MoveTemp(Candidate);
 	return true;
 }
@@ -746,6 +818,10 @@ bool UEMSWorldPartitionRuntimeSubsystem::RestoreRecord(const FEMSWorldPartitionR
 		}
 		return false;
 	}
+	if (FEMSWorldPartitionRuntimeActorRecord* LiveRecord = FindRecordMutable(Record.LocalId))
+	{
+		LiveRecord->RequiredCellGuid = FGuid();
+	}
 	UE_LOG(
 		LogEMSAddonsWorldPartition,
 		Verbose,
@@ -783,6 +859,10 @@ void UEMSWorldPartitionRuntimeSubsystem::RestoreVisibleDormantRecords()
 		}
 		const FEMSWorldPartitionRuntimeActorRecord& Record = Manager->RuntimeActorRecords[Index];
 		if (LiveActorsById.Contains(Record.LocalId) || DuplicateIds.Contains(Record.LocalId))
+		{
+			continue;
+		}
+		if (Record.RequiredCellGuid.IsValid() && !IsCellVisible(GetWorld(), Record.RequiredCellGuid))
 		{
 			continue;
 		}
@@ -1053,6 +1133,24 @@ void UEMSWorldPartitionRuntimeSubsystem::HandleLevelBeginMakingInvisible(
 		{
 			continue;
 		}
+		if (IsActorSupportedByLevel(GetWorld(), Actor, LoadedLevel))
+		{
+			UE_LOG(
+				LogEMSAddonsWorldPartition,
+				Verbose,
+				TEXT("A managed actor was made dormant because its supporting cell is being hidden. Actor=%s Cell=%s"),
+				*Actor->GetPathName(),
+				*UnloadingCell->GetDebugName());
+			if (CaptureAndRemoveActor(LocalId))
+			{
+				if (FEMSWorldPartitionRuntimeActorRecord* Record = FindRecordMutable(LocalId))
+				{
+					Record->RequiredCellGuid = UnloadingCell->GetGuid();
+				}
+			}
+			continue;
+		}
+
 		//The hiding cell still reports itself visible here, so it is excluded from the
 		//query: what matters is whether anything else keeps the location loaded.
 		const EMSAddonsWorldPartition::FEMSWorldPartitionCellCoverage Coverage =

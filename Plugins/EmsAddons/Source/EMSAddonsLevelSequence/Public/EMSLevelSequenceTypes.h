@@ -28,8 +28,9 @@ struct EMSADDONSLEVELSEQUENCE_API FEMSLevelSequencePlaybackState
 {
 	GENERATED_BODY()
 
-	/** 2: Position and tick resolution are stored as scalars. See below. */
-	static constexpr int32 CurrentVersion = 2;
+	/** 3: Runtime loop requests are persisted explicitly. */
+	static constexpr int32 CurrentVersion = 3;
+	static constexpr int32 MinimumSupportedVersion = 2;
 
 	UPROPERTY(SaveGame, VisibleAnywhere, Category = "EMS Addons|Level Sequence")
 	int32 Version = CurrentVersion;
@@ -73,6 +74,13 @@ struct EMSADDONSLEVELSEQUENCE_API FEMSLevelSequencePlaybackState
 
 	UPROPERTY(SaveGame, VisibleAnywhere, Category = "EMS Addons|Level Sequence")
 	bool bHasStarted = false;
+
+	/**
+	 * The last requested loop count. -1 means infinite, 0 means no loops, and
+	 * positive values are the finite number requested by Play Looping.
+	 */
+	UPROPERTY(SaveGame, VisibleAnywhere, Category = "EMS Addons|Level Sequence")
+	int32 RequestedLoopCount = 0;
 
 	UPROPERTY(SaveGame, VisibleAnywhere, Category = "EMS Addons|Level Sequence")
 	int32 CompletedLoops = 0;

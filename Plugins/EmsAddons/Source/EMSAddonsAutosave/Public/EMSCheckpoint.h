@@ -2,6 +2,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "EMSActorSaveInterface.h"
 #include "EMSAutosaveTypes.h"
 #include "GameFramework/Actor.h"
 #include "EMSCheckpoint.generated.h"
@@ -16,7 +17,7 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE(FEMSCheckpointActorActivated);
 
 /** Level-placed checkpoint actor that can activate from player overlap or an explicit Blueprint call. */
 UCLASS(Blueprintable, ClassGroup = (EasyMultiSave), meta = (DisplayName = "EMS Checkpoint"))
-class EMSADDONSAUTOSAVE_API AEMSCheckpoint : public AActor
+class EMSADDONSAUTOSAVE_API AEMSCheckpoint : public AActor, public IEMSActorSaveInterface
 {
 	GENERATED_BODY()
 
@@ -45,7 +46,9 @@ public:
 	bool bActivateOnPlayerOverlap = true;
 
 	/**
-	 * Prevents this checkpoint from activating more than once during the current play session unless Reset Checkpoint is called.
+	 * Prevents this checkpoint from activating more than once until Reset Checkpoint is called. The
+	 * already-activated state is part of the saved game, so it survives any save/load, not only a
+	 * checkpoint load - walking back into a passed checkpoint after an unrelated normal save still refuses.
 	 * When disabled, every accepted re-entry is treated as a fresh checkpoint capture and can save again.
 	 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "EMS Addons|Autosave and Checkpoints|Activation")
@@ -113,7 +116,10 @@ protected:
 private:
 	friend class UEMSAutosaveSubsystem;
 
-	UPROPERTY(Transient)
+	//Deliberately not Transient: this has to survive a normal (non-checkpoint) save/load too,
+	//otherwise a checkpoint the player already passed forgets that fact the moment any later,
+	//unrelated save supersedes the stored checkpoint record, and can be triggered again.
+	UPROPERTY(SaveGame)
 	bool bActivatedThisSession = false;
 
 	UPROPERTY(Transient)

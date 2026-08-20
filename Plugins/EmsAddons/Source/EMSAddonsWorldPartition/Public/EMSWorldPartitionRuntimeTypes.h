@@ -24,6 +24,10 @@ struct EMSADDONSWORLDPARTITION_API FEMSWorldPartitionRuntimeActorRecord
 	UPROPERTY(SaveGame)
 	TArray<uint8> ActorBinaryData;
 
+	/** Supporting World Partition cell that must be visible before a dormant actor can return. */
+	UPROPERTY(SaveGame)
+	FGuid RequiredCellGuid;
+
 	UPROPERTY(SaveGame, VisibleAnywhere, BlueprintReadOnly, Category = "EMS Addons|World Partition Runtime Actors")
 	int32 RecordVersion = CurrentVersion;
 };

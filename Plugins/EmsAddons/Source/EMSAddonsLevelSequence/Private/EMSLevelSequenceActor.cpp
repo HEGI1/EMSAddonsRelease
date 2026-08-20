@@ -60,6 +60,8 @@ void AEMSLevelSequenceActor::BeginPlay()
 	// Play on the same actor, so this has to clear or the actor can never capture
 	// or restore again for the rest of the session.
 	bIsEndingPlay = false;
+	RuntimeRequestedLoopCount = PlaybackSettings.LoopCount.Value;
+	RuntimeCompletedLoops = 0;
 
 	InitializeAutoPlayGateForBeginPlay();
 
@@ -121,6 +123,28 @@ void AEMSLevelSequenceActor::Destroyed()
 	UnbindEMSCompletionDelegates();
 	UnbindSequencePlayerDelegates();
 	Super::Destroyed();
+}
+
+void AEMSLevelSequenceActor::PlayLooping(const int32 NumLoops)
+{
+	ULevelSequencePlayer* Player = GetPersistenceSequencePlayer();
+	if (!Player)
+	{
+		InitializePlayer();
+		BindSequencePlayerDelegates();
+		Player = GetPersistenceSequencePlayer();
+	}
+
+	if (!Player || !Player->IsValid())
+	{
+		return;
+	}
+
+	RuntimeRequestedLoopCount = FMath::Max(-1, NumLoops);
+	RuntimeCompletedLoops = 0;
+	bStartingTrackedLoopPlayback = true;
+	Player->PlayLooping(RuntimeRequestedLoopCount);
+	bStartingTrackedLoopPlayback = false;
 }
 
 bool AEMSLevelSequenceActor::CanAccessLevelSequence(
@@ -209,6 +233,7 @@ bool AEMSLevelSequenceActor::CaptureLevelSequenceState()
 	CapturedState.PlayRate = Player->GetPlayRate();
 	CapturedState.bReversePlayback =
 		Player->IsReversed() || CapturedState.PlayRate < 0.0f;
+	CapturedState.RequestedLoopCount = FMath::Max(-1, RuntimeRequestedLoopCount);
 	CapturedState.CompletedLoops = FMath::Max(0, RuntimeCompletedLoops);
 	CapturedState.SequenceAsset = FSoftObjectPath(GetSequence());
 
@@ -260,8 +285,8 @@ bool AEMSLevelSequenceActor::ValidateStateInternal(
 		return false;
 	}
 
-	if (PersistedState.Version
-		!= FEMSLevelSequencePlaybackState::CurrentVersion)
+	if (PersistedState.Version < FEMSLevelSequencePlaybackState::MinimumSupportedVersion
+		|| PersistedState.Version > FEMSLevelSequencePlaybackState::CurrentVersion)
 	{
 		OutReason = FText::Format(
 			LOCTEXT(
@@ -282,7 +307,8 @@ bool AEMSLevelSequenceActor::ValidateStateInternal(
 
 	if (!PersistedState.HasValidTimeScalars()
 		|| !FMath::IsFinite(PersistedState.PlayRate)
-		|| PersistedState.CompletedLoops < 0)
+		|| PersistedState.CompletedLoops < 0
+		|| (PersistedState.Version >= 3 && PersistedState.RequestedLoopCount < -1))
 	{
 		OutReason = LOCTEXT(
 			"LevelSequenceInvalidState",
@@ -450,17 +476,21 @@ bool AEMSLevelSequenceActor::ApplyPersistedState(FText& OutReason)
 	bApplyingRestore = true;
 	Player->StopAtCurrentTime();
 
+	const int32 RequestedLoopCount = PersistedState.Version >= 3
+		? PersistedState.RequestedLoopCount
+		: PlaybackSettings.LoopCount.Value;
+	int32 RemainingLoopCount = RequestedLoopCount;
+	if (RemainingLoopCount >= 0)
+	{
+		RemainingLoopCount = FMath::Max(
+			0,
+			RemainingLoopCount - PersistedState.CompletedLoops);
+	}
+
 	FMovieSceneSequencePlaybackSettings RestoredSettings = PlaybackSettings;
 	RestoredSettings.bAutoPlay = false;
 	RestoredSettings.PlayRate = FMath::Abs(PersistedState.PlayRate);
-
-	if (RestoredSettings.LoopCount.Value >= 0)
-	{
-		RestoredSettings.LoopCount.Value = FMath::Max(
-			0,
-			RestoredSettings.LoopCount.Value
-				- PersistedState.CompletedLoops);
-	}
+	RestoredSettings.LoopCount.Value = RemainingLoopCount;
 
 	Player->SetPlaybackSettings(RestoredSettings);
 	Player->SetPlayRate(RestoredSettings.PlayRate);
@@ -488,18 +518,10 @@ bool AEMSLevelSequenceActor::ApplyPersistedState(FText& OutReason)
 			== EEMSLevelSequencePlaybackStatus::Playing
 		&& bResumeIfPlaying)
 	{
-		if (PersistedState.bReversePlayback)
+		Player->PlayLooping(RemainingLoopCount);
+		if (PersistedState.bReversePlayback != Player->IsReversed())
 		{
-			Player->PlayReverse();
-		}
-		else
-		{
-			Player->PlayLooping(RestoredSettings.LoopCount.Value);
-
-			if (PersistedState.bReversePlayback != Player->IsReversed())
-			{
-				Player->ChangePlaybackDirection();
-			}
+			Player->ChangePlaybackDirection();
 		}
 
 		bRuntimeFinished = false;
@@ -528,6 +550,7 @@ bool AEMSLevelSequenceActor::ApplyPersistedState(FText& OutReason)
 	}
 
 	bRuntimeHasStarted = PersistedState.bHasStarted;
+	RuntimeRequestedLoopCount = RequestedLoopCount;
 	RuntimeCompletedLoops = PersistedState.CompletedLoops;
 	bApplyingRestore = false;
 	OutReason = FText::GetEmpty();
@@ -1099,6 +1122,8 @@ void AEMSLevelSequenceActor::StartAuthoredAutoPlayWhenReady()
 	ReleaseAutoPlaySuppression();
 	if (bAuthoredAutoPlay)
 	{
+		RuntimeRequestedLoopCount = PlaybackSettings.LoopCount.Value;
+		RuntimeCompletedLoops = 0;
 		Player->Play();
 	}
 }
@@ -1107,6 +1132,12 @@ void AEMSLevelSequenceActor::HandleSequencePlayed()
 {
 	if (!bApplyingRestore)
 	{
+		if (!bStartingTrackedLoopPlayback)
+		{
+			RuntimeRequestedLoopCount = PlaybackSettings.LoopCount.Value;
+			RuntimeCompletedLoops = 0;
+		}
+
 		bRuntimeHasStarted = true;
 		bRuntimeFinished = false;
 	}
@@ -1176,7 +1207,7 @@ void AEMSLevelSequenceActor::LogRestoreIssue(const FText& Reason) const
 	UE_LOG(
 		LogEMSAddonsLevelSequence,
 		Warning,
-		TEXT("EMS Level Sequence operation skipped or failed. Actor=%s Level=%s Asset=%s StateVersion=%d SavedPosition=%d.%f SavedRate=%d/%d CurrentPosition=%s CurrentRate=%d/%d Status=%d Phase=%d Reason=%s"),
+		TEXT("EMS Level Sequence operation skipped or failed. Actor=%s Level=%s Asset=%s StateVersion=%d SavedPosition=%d.%f SavedRate=%d/%d RequestedLoops=%d CompletedLoops=%d CurrentPosition=%s CurrentRate=%d/%d Status=%d Phase=%d Reason=%s"),
 		*GetPathName(),
 		GetLevel() ? *GetLevel()->GetPathName() : TEXT("<none>"),
 		GetSequence() ? *GetSequence()->GetPathName() : TEXT("<none>"),
@@ -1185,6 +1216,8 @@ void AEMSLevelSequenceActor::LogRestoreIssue(const FText& Reason) const
 		PersistedState.PositionSubFrame,
 		PersistedState.TickResolutionNumerator,
 		PersistedState.TickResolutionDenominator,
+		PersistedState.RequestedLoopCount,
+		PersistedState.CompletedLoops,
 		*LexToShortString(CurrentTime.Time),
 		CurrentTime.Rate.Numerator,
 		CurrentTime.Rate.Denominator,

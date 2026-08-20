@@ -11,6 +11,14 @@ class EMSADDONSWORLDPARTITION_API UEMSWorldPartitionRuntimeLibrary : public UBlu
 	GENERATED_BODY()
 
 public:
+	/**
+	 * Spawns a managed runtime actor at the given transform.
+	 *
+	 * The spawn location must be covered by a currently visible supported generated
+	 * cell, or the spawn is rejected and this returns null. This is not retried
+	 * automatically: an unloaded cell at BeginPlay (e.g. spawning at the position of
+	 * an always-loaded actor before streaming has caught up) will fail the spawn.
+	 */
 	UFUNCTION(
 		BlueprintCallable,
 		Category = "EMS Addons|World Partition Runtime Actors",

@@ -10,6 +10,8 @@ Use this addon for runtime actors that should automatically unload and return wi
 
 Nothing needs to be placed. EMSAddons creates the persistent manager automatically.
 
+The spawn location must be covered by a currently visible supported generated cell, or the spawn is rejected (see **Important behavior** below).
+
 ## Blueprint nodes
 
 - **Spawn World Partition Runtime Actor** — spawns a managed runtime actor at the requested transform.
@@ -23,6 +25,7 @@ No manual transfer or cell-management calls are required after spawning.
 - The actor's current location determines its World Partition streaming lifetime.
 - Managed actors travel freely between cells. They are not bound to the cell they were spawned in: a moving actor keeps being owned by wherever it currently is, so crossing cell boundaries needs no handover and no special handling.
 - Several generated cells can cover one location. The actor stays live for as long as any visible supported cell covers its location, and is captured only when the last one unloads.
+- Characters and simulating physics actors are also captured before streamed geometry supporting them disappears, and wait for that support cell before returning.
 - When that location becomes available again, the actor is restored with its saved EMS state.
 - Moving into an area that is not loaded is the one limit on travel. A low-frequency safety check captures such an actor, and it returns the same way.
 - Normal EMS saves capture the actor at its current location.
@@ -48,7 +51,7 @@ Use [Actor Spawner](ACTOR_SPAWNER.md) when the actor must explicitly belong to a
 
 ## Important behavior
 
-- Spawn locations must be covered by a currently visible supported generated cell.
+- Spawn locations must be covered by a currently visible supported generated cell. This is checked once and not retried: spawning at BeginPlay before streaming has caught up (for example, at the position of an always-loaded actor whose cell has not streamed in yet) fails the spawn.
 - If a managed actor temporarily cannot resolve a supported cell, it stays alive and is retried.
 - Spawning is rejected while a save or load is in progress, including the initial World Partition load. Gate spawns on **Is Saving Or Loading**, or wait for the EMS load to complete — an actor spawned into that window would be destroyed by the load that follows.
 - Loading replaces the managed runtime actors with the ones the save holds. Managed actors spawned since that save was written are destroyed and do not return.

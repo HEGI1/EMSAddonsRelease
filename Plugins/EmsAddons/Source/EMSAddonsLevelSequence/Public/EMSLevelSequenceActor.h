@@ -49,6 +49,13 @@ public:
 	FEMSLevelSequencePlaybackState PersistedState;
 
 	/**
+	 * Start or resume forward playback and remember the requested loop count for
+	 * save/load. -1 loops forever, 0 plays once, positive values are finite loops.
+	 */
+	UFUNCTION(BlueprintCallable, Category = "EMS Addons|Level Sequence|Playback", meta = (DisplayName = "Play Looping"))
+	void PlayLooping(int32 NumLoops = -1);
+
+	/**
 	 * Leaves a sequence that was saved while playing paused at its restored
 	 * position, for cutscenes that gameplay starts rather than the load.
 	 */
@@ -136,6 +143,7 @@ private:
 	double RestoreStartSeconds = 0.0;
 	double InitialAutoPlayWaitStartSeconds = 0.0;
 	double InitialAutoPlayStartSeconds = 0.0;
+	int32 RuntimeRequestedLoopCount = 0;
 	int32 RuntimeCompletedLoops = 0;
 	bool bRuntimeHasStarted = false;
 	bool bRuntimeFinished = false;
@@ -147,6 +155,7 @@ private:
 	bool bLevelLoadCompletionReceived = false;
 	bool bRestoreClockStarted = false;
 	bool bApplyingRestore = false;
+	bool bStartingTrackedLoopPlayback = false;
 	bool bIsEndingPlay = false;
 
 	/**
