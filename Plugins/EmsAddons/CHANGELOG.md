@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.2.8 - 2026-08-20
 
 ### Added
 
@@ -20,7 +20,7 @@
 - **Actor Spawner:** made restore safe when actor load callbacks spawn through the same spawner and modify its manifest.
 - **World Partition Runtime Actors:** pre-save capture now runs on the game thread when EMS Multi-Thread Saving is enabled.
 - **World Partition Runtime Actors:** **Spawn World Partition Runtime Actor** no longer rejects every spawn in a partitioned world. The cell query used a zero radius, which matches no cells at all, so every location appeared to have no visible cell.
-- **World Partition Runtime Actors:** managed actors no longer disappear while the world around them stays loaded. Cell ownership is now treated as coverage — an actor stays live for as long as any visible supported cell covers its location — instead of binding it to one chosen cell whose visibility could change independently.
+- **World Partition Runtime Actors:** managed actors no longer disappear while the world around them stays loaded. Cell ownership is now treated as coverage ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â an actor stays live for as long as any visible supported cell covers its location ÃƒÆ’Ã†â€™Ãƒâ€šÃ‚Â¢ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â€šÂ¬Ã…Â¡Ãƒâ€šÃ‚Â¬ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬Ãƒâ€šÃ‚Â instead of binding it to one chosen cell whose visibility could change independently.
 - **World Partition Runtime Actors:** spawning while a save or load is in progress, including the initial World Partition load, is now rejected with a warning instead of producing an actor that the load immediately destroys.
 - **World Partition Runtime Actors:** a load that destroys live managed actors now says so in the log.
 - **Autosave and Checkpoints:** **EMS Checkpoint** now implements EMS's Actor Save Interface, so it participates in normal (non-checkpoint) Save/Load Game Actors like any other addon actor. Previously it did not, so a **Trigger Once** checkpoint's already-activated state existed only in memory: a later unrelated save superseded the one stored checkpoint record, and reloading let the player trigger the same checkpoint again.
