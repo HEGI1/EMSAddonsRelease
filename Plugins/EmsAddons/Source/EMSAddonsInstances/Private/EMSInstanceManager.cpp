@@ -13,11 +13,60 @@
 #include "Misc/Crc.h"
 #include "ProfilingDebugging/CpuProfilerTrace.h"
 #include "UObject/UObjectGlobals.h"
+#include "WorldPartition/ActorInstanceGuids.h"
 #include "WorldPartition/HLOD/HLODInstancedStaticMeshComponent.h"
 
 namespace
 {
 	const FName FoliagePackageName(TEXT("/Script/Foliage"));
+
+	FName MakeStableFoliageSourceName(const UFoliageType* FoliageType)
+	{
+		if (!FoliageType)
+		{
+			return NAME_None;
+		}
+
+		const FString NormalizedPath =
+			UWorld::RemovePIEPrefix(FoliageType->GetPathName());
+		if (!NormalizedPath.StartsWith(TEXT("/Memory/")))
+		{
+			return FName(*NormalizedPath);
+		}
+
+		// Embedded/generated foliage types can inherit the runtime-cell package in
+		// their path. The stable world + actor + local object name + mesh identity
+		// is sufficient and survives recreation of that /Memory package.
+		return FoliageType->GetFName();
+	}
+}
+
+bool AEMSInstanceManager::IsLevelReadyForSourceDiscovery(const ULevel* Level)
+{
+	if (!Level)
+	{
+		return false;
+	}
+
+	const UWorld* World = Level->GetWorld();
+	if (World && Level == World->PersistentLevel)
+	{
+		return true;
+	}
+
+	// A full manager refresh can run because a different cell finished loading.
+	// Do not let that pass discover a second cell while Unreal is still assembling
+	// its actors/components, or that partial state becomes the cached authored
+	// baseline and every later delta correctly fails validation against it.
+	//
+	// bAlreadyUpdatedComponents and its siblings are temporary bookkeeping that
+	// Unreal keeps only while making a level visible and clears once that pass
+	// finishes, so a level that has fully streamed in reads false. Level
+	// visibility with no transition pending is the state that actually means
+	// "assembled and in the world".
+	return Level->bIsVisible
+		&& !Level->HasVisibilityChangeRequestPending()
+		&& Level->bAreComponentsCurrentlyRegistered;
 }
 
 bool AEMSInstanceManager::IsSupportedActor(const AActor* Actor) const
@@ -59,7 +108,13 @@ FEMSInstanceSourceId AEMSInstanceManager::BuildSourceId(
 
 	const AActor* SourceOwner = Component->GetOwner();
 	Id.LevelIdentity = MakeLevelIdentity(SourceOwner->GetLevel());
-	Id.OwnerPath = FSoftObjectPath(SourceOwner);
+	if (!BuildStableOwnerIdentity(
+			SourceOwner,
+			Id.OwnerInstanceGuid,
+			Id.OwnerPath))
+	{
+		return FEMSInstanceSourceId();
+	}
 	Id.SourceName = Component->GetFName();
 	Id.MeshPath = FSoftObjectPath(Component->GetStaticMesh());
 	Id.SourceKind = Component->IsA<UHierarchicalInstancedStaticMeshComponent>()
@@ -79,8 +134,20 @@ void AEMSInstanceManager::CollectFoliageSources(
 		return;
 	}
 
+	FGuid OwnerInstanceGuid;
+	FSoftObjectPath OwnerPath;
+	if (!BuildStableOwnerIdentity(
+			FoliageActor,
+			OwnerInstanceGuid,
+			OwnerPath))
+	{
+		return;
+	}
+
 	FoliageActor->ForEachFoliageInfo(
-		[this, FoliageActor](UFoliageType* FoliageType, FFoliageInfo& Info)
+		[this, FoliageActor, OwnerInstanceGuid, OwnerPath](
+			UFoliageType* FoliageType,
+			FFoliageInfo& Info)
 		{
 			UFoliageType_InstancedStaticMesh* StaticMeshType =
 				Cast<UFoliageType_InstancedStaticMesh>(FoliageType);
@@ -99,12 +166,9 @@ void AEMSInstanceManager::CollectFoliageSources(
 
 			FEMSInstanceSourceId SourceId;
 			SourceId.LevelIdentity = MakeLevelIdentity(FoliageActor->GetLevel());
-			SourceId.OwnerPath = FSoftObjectPath(FoliageActor);
-			// A foliage type owned by the Instanced Foliage Actor has the level in
-			// its path, so this name carries the PIE prefix for the same reason
-			// the level identity does.
-			SourceId.SourceName = FName(
-				*UWorld::RemovePIEPrefix(FoliageType->GetPathName()));
+			SourceId.OwnerInstanceGuid = OwnerInstanceGuid;
+			SourceId.OwnerPath = OwnerPath;
+			SourceId.SourceName = MakeStableFoliageSourceName(FoliageType);
 			SourceId.MeshPath = FSoftObjectPath(Mesh);
 			// Painted foliage is authored and keyed in world space, which the
 			// shared engine derives from this kind.
@@ -115,6 +179,48 @@ void AEMSInstanceManager::CollectFoliageSources(
 		});
 }
 
+AActor* AEMSInstanceManager::FindSourceOwner(
+	const FEMSInstanceSourceId& SourceId) const
+{
+	if (!SourceId.IsValid())
+	{
+		return nullptr;
+	}
+
+	// Conventional levels keep their stable soft-object path as a cheap direct
+	// lookup. World Partition deliberately leaves it empty and resolves through
+	// the actor-instance GUID inside the matching stable world scope.
+	if (!SourceId.OwnerInstanceGuid.IsValid())
+	{
+		return Cast<AActor>(SourceId.OwnerPath.ResolveObject());
+	}
+
+	UWorld* World = GetWorld();
+	if (!World)
+	{
+		return nullptr;
+	}
+
+	for (ULevel* Level : World->GetLevels())
+	{
+		if (!IsLevelReadyForSourceDiscovery(Level)
+			|| MakeLevelIdentity(Level) != SourceId.LevelIdentity)
+		{
+			continue;
+		}
+
+		for (AActor* Actor : Level->Actors)
+		{
+			if (IsValid(Actor)
+				&& FActorInstanceGuid::GetActorInstanceGuid(*Actor)
+					== SourceId.OwnerInstanceGuid)
+			{
+				return Actor;
+			}
+		}
+	}
+	return nullptr;
+}
 
 UInstancedStaticMeshComponent* AEMSInstanceManager::FindTemplateComponent(
 	const FEMSInstanceSourceId& SourceId) const
@@ -124,7 +230,7 @@ UInstancedStaticMeshComponent* AEMSInstanceManager::FindTemplateComponent(
 		return nullptr;
 	}
 
-	AActor* SourceOwner = Cast<AActor>(SourceId.OwnerPath.ResolveObject());
+	AActor* SourceOwner = FindSourceOwner(SourceId);
 	if (!SourceOwner)
 	{
 		return nullptr;
@@ -153,9 +259,7 @@ UInstancedStaticMeshComponent* AEMSInstanceManager::FindTemplateComponent(
 					return true;
 				}
 
-				const FName SourceName(
-					*UWorld::RemovePIEPrefix(FoliageType->GetPathName()));
-				if (SourceName == SourceId.SourceName)
+				if (MakeStableFoliageSourceName(FoliageType) == SourceId.SourceName)
 				{
 					FoundComponent = Info.GetComponent();
 					return false;
@@ -213,6 +317,7 @@ UClass* AEMSInstanceManager::GetReplacementComponentClass(
 
 UInstancedStaticMeshComponent*
 AEMSInstanceManager::FindCompatibleReplacementSource(
+	const FEMSInstanceSourceId& SourceId,
 	const UInstancedStaticMeshComponent* SourceComponent,
 	UStaticMesh* ReplacementMesh) const
 {
@@ -236,10 +341,24 @@ AEMSInstanceManager::FindCompatibleReplacementSource(
 		{
 			continue;
 		}
+
+		// Authored targets can be shared. Runtime-generated targets stay owned by
+		// the source whose descriptor recreates them after streaming or load.
+		if (SavedReplacementSources.ContainsByPredicate(
+				[&SourceId, Component](
+					const FEMSInstanceReplacementSource& Descriptor)
+				{
+					return Descriptor.GeneratedSourceName == Component->GetFName()
+						&& Descriptor.TemplateSourceId != SourceId;
+				}))
+		{
+			continue;
+		}
 		return Component;
 	}
 	return nullptr;
 }
+
 FName AEMSInstanceManager::MakeReplacementSourceName(
 	const FEMSInstanceSourceId& SourceId,
 	const UStaticMesh* ReplacementMesh) const
@@ -291,6 +410,23 @@ UInstancedStaticMeshComponent* AEMSInstanceManager::EnsureReplacementSource(
 	{
 		if (Component && Component->GetFName() == Descriptor.GeneratedSourceName)
 		{
+			// Older builds could put generated components in the instance list
+			// without adding them to the actor's owned-component set. Adopt such a
+			// component before returning it so the source manager can discover it
+			// on the next refresh instead of creating a duplicate UObject.
+			SourceOwner->AddOwnedComponent(Component);
+			return Component->GetStaticMesh() == ReplacementMesh
+				? Component
+				: nullptr;
+		}
+	}
+	for (UActorComponent* ActorComponent : SourceOwner->GetInstanceComponents())
+	{
+		UInstancedStaticMeshComponent* Component =
+			Cast<UInstancedStaticMeshComponent>(ActorComponent);
+		if (Component && Component->GetFName() == Descriptor.GeneratedSourceName)
+		{
+			SourceOwner->AddOwnedComponent(Component);
 			return Component->GetStaticMesh() == ReplacementMesh
 				? Component
 				: nullptr;
@@ -330,10 +466,15 @@ UInstancedStaticMeshComponent* AEMSInstanceManager::EnsureReplacementSource(
 	ReplacementComponent->SetRelativeTransform(
 		SourceComponent->GetRelativeTransform());
 	SourceOwner->AddInstanceComponent(ReplacementComponent);
+	// AddInstanceComponent only records the component for instance cleanup. The
+	// source manager discovers live components through OwnedComponents, so both
+	// ownership registries must be updated for reconstruction to be idempotent.
+	SourceOwner->AddOwnedComponent(ReplacementComponent);
 	ReplacementComponent->OnComponentCreated();
 	ReplacementComponent->RegisterComponent();
 	return ReplacementComponent;
 }
+
 void AEMSInstanceManager::EnsureSavedReplacementSources()
 {
 	const int32 SourceCount = FMath::Min(
@@ -374,7 +515,10 @@ AEMSInstanceManager::GetOrCreateReplacementSource(
 	UStaticMesh* ReplacementMesh)
 {
 	if (UInstancedStaticMeshComponent* Existing =
-		FindCompatibleReplacementSource(SourceComponent, ReplacementMesh))
+		FindCompatibleReplacementSource(
+			SourceId,
+			SourceComponent,
+			ReplacementMesh))
 	{
 		return Existing;
 	}
@@ -439,115 +583,16 @@ bool AEMSInstanceManager::ReplaceInstance(
 	const int32 InstanceIndex,
 	UStaticMesh* ReplacementMesh)
 {
-	if (!HasInstanceAuthority()
-		|| !IsValid(Component)
-		|| !ReplacementMesh
-		|| !Component->GetStaticMesh()
-		|| InstanceIndex < 0
-		|| InstanceIndex >= Component->GetInstanceCount())
-	{
-		return false;
-	}
-
-	if (Component->GetStaticMesh() == ReplacementMesh)
-	{
-		return true;
-	}
-
-	FEMSInstanceSourceId SourceId;
-	if (!FindRegisteredSourceId(Component, SourceId))
-	{
-		RefreshLoadedSources();
-		if (!FindRegisteredSourceId(Component, SourceId))
-		{
-			return false;
-		}
-	}
-
-	FTransform WorldTransform;
-	if (!Component->GetInstanceTransform(
-		InstanceIndex,
-		WorldTransform,
-		true))
-	{
-		return false;
-	}
-
-	TArray<float> CustomData;
-	ReadInstanceCustomData(Component, InstanceIndex, CustomData);
-
-	FEMSInstanceGameplayData GameplayData;
-	const bool bHasGameplayData = GetInstanceGameplayData(
+	FEMSInstanceReplacement Replacement;
+	Replacement.Mesh = ReplacementMesh;
+	UInstancedStaticMeshComponent* ReplacementComponent = nullptr;
+	int32 ReplacementIndex = INDEX_NONE;
+	return ReplaceInstanceWithSettings(
 		Component,
 		InstanceIndex,
-		GameplayData);
-
-	UInstancedStaticMeshComponent* ReplacementComponent =
-		GetOrCreateReplacementSource(
-			SourceId,
-			Component,
-			ReplacementMesh);
-	if (!ReplacementComponent)
-	{
-		return false;
-	}
-
-	// The generated source must be discovered while it is still empty so its
-	// authored baseline is zero. Later capture then records the replacement as
-	// the ordinary remove-plus-add delta the persistence engine already uses.
-	RefreshLoadedSources();
-
-	FEMSInstanceSourceId ReplacementSourceId;
-	if (!FindRegisteredSourceId(
+		Replacement,
 		ReplacementComponent,
-		ReplacementSourceId)
-		|| ReplacementComponent->NumCustomDataFloats !=
-			Component->NumCustomDataFloats)
-	{
-		return false;
-	}
-
-	const int32 ReplacementIndex =
-		ReplacementComponent->AddInstance(WorldTransform, true);
-	if (ReplacementIndex == INDEX_NONE)
-	{
-		return false;
-	}
-
-	if (!CustomData.IsEmpty()
-		&& !ReplacementComponent->SetCustomData(
-			ReplacementIndex,
-			CustomData,
-			true))
-	{
-		ReplacementComponent->RemoveInstance(ReplacementIndex);
-		return false;
-	}
-
-	if (bHasGameplayData
-		&& !GameplayData.IsEmpty()
-		&& !SetInstanceGameplayData(
-			ReplacementComponent,
-			ReplacementIndex,
-			GameplayData))
-	{
-		ReplacementComponent->RemoveInstance(ReplacementIndex);
-		return false;
-	}
-
-	if (!Component->RemoveInstance(InstanceIndex))
-	{
-		if (bHasGameplayData && !GameplayData.IsEmpty())
-		{
-			ClearInstanceGameplayData(
-				ReplacementComponent,
-				ReplacementIndex);
-		}
-		ReplacementComponent->RemoveInstance(ReplacementIndex);
-		return false;
-	}
-
-	return true;
+		ReplacementIndex);
 }
 
 void AEMSInstanceManager::CollectSources()
@@ -562,12 +607,13 @@ void AEMSInstanceManager::CollectSources()
 	// Saved replacement descriptors are loaded on the persistent manager before
 	// restore. Recreate their target sources first so this discovery pass sees an
 	// empty authored baseline and the normal delta engine can restore additions.
+	// FindSourceOwner itself refuses partially assembled streaming levels.
 	EnsureSavedReplacementSources();
 
 	TArray<UInstancedStaticMeshComponent*> Components;
 	for (ULevel* Level : World->GetLevels())
 	{
-		if (!Level)
+		if (!IsLevelReadyForSourceDiscovery(Level))
 		{
 			continue;
 		}

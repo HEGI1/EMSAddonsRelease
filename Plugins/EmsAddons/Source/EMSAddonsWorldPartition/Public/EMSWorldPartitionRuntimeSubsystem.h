@@ -109,7 +109,7 @@ private:
 	void HandleActorDestroyed(AActor* Actor);
 
 	bool SaveActorState(AActor* Actor, TArray<uint8>& OutBinary) const;
-	bool LoadActorState(AActor* Actor, const TArray<uint8>& Binary) const;
+	bool LoadActorState(AActor* Actor, const TArray<uint8>& Binary, bool bDeferredSpawn = false) const;
 	bool CaptureActor(const FGuid& LocalId, AActor* Actor);
 	bool CaptureAndRemoveActor(const FGuid& LocalId);
 	bool DestroyActorInternally(const FGuid& LocalId);

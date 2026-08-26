@@ -60,6 +60,8 @@ void AEMSLevelSequenceActor::BeginPlay()
 	// Play on the same actor, so this has to clear or the actor can never capture
 	// or restore again for the rest of the session.
 	bIsEndingPlay = false;
+	bRuntimeHasStarted = false;
+	bRuntimeFinished = false;
 	RuntimeRequestedLoopCount = PlaybackSettings.LoopCount.Value;
 	RuntimeCompletedLoops = 0;
 
@@ -293,6 +295,20 @@ bool AEMSLevelSequenceActor::ValidateStateInternal(
 				"LevelSequenceUnsupportedVersion",
 				"Unsupported Level Sequence state version {0}."),
 			FText::AsNumber(PersistedState.Version));
+		return false;
+	}
+
+	switch (PersistedState.PlaybackStatus)
+	{
+	case EEMSLevelSequencePlaybackStatus::Stopped:
+	case EEMSLevelSequencePlaybackStatus::Paused:
+	case EEMSLevelSequencePlaybackStatus::Playing:
+	case EEMSLevelSequencePlaybackStatus::Finished:
+		break;
+	default:
+		OutReason = LOCTEXT(
+			"LevelSequenceInvalidPlaybackStatus",
+			"The saved Level Sequence state contains an invalid playback status.");
 		return false;
 	}
 
@@ -807,15 +823,22 @@ void AEMSLevelSequenceActor::SkipPersistenceWithoutAuthority()
 
 void AEMSLevelSequenceActor::ActorPreSave_Implementation()
 {
+	const TWeakObjectPtr<AEMSLevelSequenceActor> WeakThis(this);
 	EMSAddons::RunOnGameThread(
-		[this]()
+		[WeakThis]()
 		{
+			AEMSLevelSequenceActor* Actor = WeakThis.Get();
+			if (!IsValid(Actor))
+			{
+				return;
+			}
+
 			// The net mode is read on the game thread with everything else.
 			if (EMSAddons::HasPersistenceAuthority(
-				this,
-				GetLevelSequenceNetMode()))
+				Actor,
+				Actor->GetLevelSequenceNetMode()))
 			{
-				CaptureLevelSequenceState();
+				Actor->CaptureLevelSequenceState();
 			}
 		});
 }
@@ -1178,18 +1201,62 @@ void AEMSLevelSequenceActor::HandleSequenceUpdated(
 	const FFrameTime CurrentTime,
 	const FFrameTime PreviousTime)
 {
-	if (bApplyingRestore || !Player.IsPlaying())
+	if (bApplyingRestore
+		|| !Player.IsPlaying()
+		|| RuntimeRequestedLoopCount == 0)
 	{
 		return;
 	}
 
-	const bool bWrappedForward =
-		!Player.IsReversed()
-		&& CurrentTime.AsDecimal() < PreviousTime.AsDecimal();
-	const bool bWrappedReverse =
-		Player.IsReversed()
-		&& CurrentTime.AsDecimal() > PreviousTime.AsDecimal();
-	if (bWrappedForward || bWrappedReverse)
+	const FQualifiedFrameTime PlayerTime = Player.GetCurrentTime();
+	const FQualifiedFrameTime StartTime = Player.GetStartTime();
+	const FQualifiedFrameTime EndTime = Player.GetEndTime();
+	if (!PlayerTime.Rate.IsValid()
+		|| !StartTime.Rate.IsValid()
+		|| !EndTime.Rate.IsValid())
+	{
+		return;
+	}
+
+	const double CurrentDecimal = CurrentTime.AsDecimal();
+	const double PreviousDecimal = PreviousTime.AsDecimal();
+	const double StartDecimal = FFrameRate::TransformTime(
+		StartTime.Time,
+		StartTime.Rate,
+		PlayerTime.Rate).AsDecimal();
+	const double EndDecimal = FFrameRate::TransformTime(
+		EndTime.Time,
+		EndTime.Rate,
+		PlayerTime.Rate).AsDecimal();
+
+	if (!FMath::IsFinite(CurrentDecimal)
+		|| !FMath::IsFinite(PreviousDecimal)
+		|| !FMath::IsFinite(StartDecimal)
+		|| !FMath::IsFinite(EndDecimal)
+		|| EndDecimal <= StartDecimal
+		|| CurrentDecimal < StartDecimal
+		|| CurrentDecimal > EndDecimal
+		|| PreviousDecimal < StartDecimal
+		|| PreviousDecimal > EndDecimal)
+	{
+		return;
+	}
+
+	const bool bMovedOppositeToPlayback = Player.IsReversed()
+		? CurrentDecimal > PreviousDecimal
+		: CurrentDecimal < PreviousDecimal;
+	if (!bMovedOppositeToPlayback)
+	{
+		return;
+	}
+
+	const double DirectDistance =
+		FMath::Abs(CurrentDecimal - PreviousDecimal);
+	const double WrappedDistance = Player.IsReversed()
+		? (PreviousDecimal - StartDecimal) + (EndDecimal - CurrentDecimal)
+		: (EndDecimal - PreviousDecimal) + (CurrentDecimal - StartDecimal);
+
+	if (WrappedDistance >= 0.0 && WrappedDistance < DirectDistance)
 	{
 		++RuntimeCompletedLoops;
 	}

@@ -22,7 +22,7 @@ Checkpoint loading can travel to another map. In streamed levels and World Parti
 ### Checkpoint options
 
 - **Activate On Player Overlap** — activates when the player enters the Trigger.
-- **Trigger Once** — allows one activation per play session. Disable for repeatable checkpoints.
+- **Trigger Once** — allows one activation per play session. Disable for repeatable checkpoints. **Activate Checkpoint** returns false when the committed checkpoint already matches, so a checkpoint rebuilt by a respawn or a streamed-level reload does not report a second activation.
 - **Display Name** — optional saved checkpoint name.
 
 Use **Reset Checkpoint** to clear the checkpoint actor's session activation state.

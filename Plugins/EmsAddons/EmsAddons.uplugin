@@ -1,7 +1,7 @@
 {
 	"FileVersion": 3,
-	"Version": 10,
-	"VersionName": "0.2.9",
+	"Version": 11,
+	"VersionName": "0.3.0",
 	"FriendlyName": "Easy Multi Save Addons",
 	"Description": "Extension amd integrations for the Easy Multi Save plugin.",
 	"Category": "Michael Hegemann",
@@ -15,6 +15,11 @@
 	"Modules": [
 		{
 			"Name": "EMSAddonsCore",
+			"Type": "Runtime",
+			"LoadingPhase": "Default"
+		},
+		{
+			"Name": "EMSAddonsPhysics",
 			"Type": "Runtime",
 			"LoadingPhase": "Default"
 		},

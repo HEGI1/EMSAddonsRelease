@@ -1,4 +1,4 @@
-﻿//Easy Multi Save Addons - Copyright (C) 2026 by Michael Hegemann.
+//Easy Multi Save Addons - Copyright (C) 2026 by Michael Hegemann.
 #pragma once
 
 #include "CoreMinimal.h"
@@ -59,7 +59,7 @@ public:
 
 	/**
 	 * Queues a normal EMS async save using the data groups configured for the checkpoint system.
-	 * Returns false while EMS is loading; load/restore is a cancellation boundary and autosaves are not queued across it.
+	 * Returns false on clients or while EMS is loading; load/restore is a cancellation boundary and autosaves are not queued across it.
 	 * This is a convenience scheduler and does not replace normal EMS saves.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "EMS Addons|Autosave and Checkpoints|Autosave", meta = (DisplayName = "Request Autosave"))
@@ -205,7 +205,10 @@ private:
 	 * describing state it was not saved with.
 	 */
 	bool BeginCheckpointGeneration(const FString& SaveSlot, FGuid& OutGeneration);
-	void AbandonCheckpointGeneration(const FString& SaveSlot);
+
+	/** Rolls back a reservation only when the EMS save task never started. */
+	void RollbackCheckpointGeneration(const FString& SaveSlot);
+
 	bool CommitCheckpoint(
 		const FEMSCheckpointRecord& Record,
 		const FString& SaveSlot,

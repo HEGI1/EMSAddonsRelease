@@ -47,6 +47,9 @@ AEMSGeometryCollectionActor::AEMSGeometryCollectionActor()
 		CreateDefaultSubobject<UGeometryCollectionComponent>(
 			TEXT("GeometryCollectionComponent"));
 	SetRootComponent(GeometryCollectionComponent);
+	StreamingPhysicsGuard =
+		CreateDefaultSubobject<UEMSPhysicsStreamingGuardComponent>(
+			TEXT("StreamingPhysicsGuard"));
 	LastRestoreResult = FEMSAddonResult::Success();
 
 #if WITH_EDITORONLY_DATA
@@ -143,6 +146,11 @@ int64 AEMSGeometryCollectionActor::ComputeCurrentHierarchyHash() const
 
 bool AEMSGeometryCollectionActor::CaptureGeometryCollectionState()
 {
+	if (IsGeometryRestorePending())
+	{
+		return false;
+	}
+
 	FText Reason;
 	if (!CanAccessGeometryState(Reason))
 	{
@@ -234,6 +242,12 @@ bool AEMSGeometryCollectionActor::ValidateStateInternal(
 		|| SavedCount != CurrentCount)
 	{
 		OutReason = LOCTEXT("GeometryTransformCountMismatch", "The saved and current transform counts differ.");
+		return false;
+	}
+
+	if (PersistedState.BrokenIndices.Num() > SavedCount)
+	{
+		OutReason = LOCTEXT("GeometryBrokenIndexCountMismatch", "The saved state contains more broken indices than transforms.");
 		return false;
 	}
 
@@ -579,13 +593,20 @@ void AEMSGeometryCollectionActor::SkipPersistenceWithoutAuthority()
 
 void AEMSGeometryCollectionActor::ActorPreSave_Implementation()
 {
+	const TWeakObjectPtr<AEMSGeometryCollectionActor> WeakThis(this);
 	EMSAddons::RunOnGameThread(
-		[this]()
+		[WeakThis]()
 		{
-			// The net mode is read on the game thread with everything else.
-			if (EMSAddons::HasPersistenceAuthority(this, GetGeometryNetMode()))
+			AEMSGeometryCollectionActor* Actor = WeakThis.Get();
+			if (!IsValid(Actor))
 			{
-				CaptureGeometryCollectionState();
+				return;
+			}
+
+			// The net mode is read on the game thread with everything else.
+			if (EMSAddons::HasPersistenceAuthority(Actor, Actor->GetGeometryNetMode()))
+			{
+				Actor->CaptureGeometryCollectionState();
 			}
 		});
 }

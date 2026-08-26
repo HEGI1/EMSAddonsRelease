@@ -6,6 +6,7 @@
 #include "EMSAddonsTypes.h"
 #include "EMSActorSaveInterface.h"
 #include "EMSGeometryCollectionTypes.h"
+#include "EMSPhysicsStreamingGuardComponent.h"
 #include "GeometryCollection/GeometryCollectionComponent.h"
 #include "GameFramework/Actor.h"
 #include "EMSGeometryCollectionActor.generated.h"
@@ -26,6 +27,15 @@ public:
 
 	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "EMS Addons|Geometry")
 	TObjectPtr<UGeometryCollectionComponent> GeometryCollectionComponent;
+
+	/**
+	 * Keeps the collection from falling out of the world while the geometry it
+	 * rests on is streamed out. Placed here rather than left to the project
+	 * because a saved position below the world is a persistence problem, not only
+	 * a physics one.
+	 */
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "EMS Addons|Geometry")
+	TObjectPtr<UEMSPhysicsStreamingGuardComponent> StreamingPhysicsGuard;
 
 #if WITH_EDITORONLY_DATA
 	/** Editor-only marker, so the actor is identifiable before an asset is assigned. */

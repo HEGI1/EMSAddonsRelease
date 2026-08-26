@@ -14,8 +14,11 @@
 #include "Engine/Level.h"
 #include "Engine/Texture2D.h"
 #include "Engine/World.h"
+#include "Engine/LevelStreaming.h"
+#include "Streaming/LevelStreamingDelegates.h"
 #include "EngineUtils.h"
 #include "ProfilingDebugging/CpuProfilerTrace.h"
+#include "TimerManager.h"
 #include "UObject/ConstructorHelpers.h"
 #include "WorldPartition/ActorInstanceGuids.h"
 
@@ -151,20 +154,25 @@ void AEMSInstancedSourceManager::BeginPlay()
 	// A load clears this again in ActorPreLoad, so real restoration is unaffected.
 	MarkLoadedSourcesRestored();
 
-	LevelAddedHandle = FWorldDelegates::LevelAddedToWorld.AddUObject(
-		this,
-		&AEMSInstancedSourceManager::HandleLevelAdded);
-	LevelRemovedHandle = FWorldDelegates::LevelRemovedFromWorld.AddUObject(
-		this,
-		&AEMSInstancedSourceManager::HandleLevelRemoved);
+	StreamingStateChangedHandle =
+		FLevelStreamingDelegates::OnLevelStreamingStateChanged.AddUObject(
+			this,
+			&AEMSInstancedSourceManager::HandleLevelStreamingStateChanged);
+	BeginMakingInvisibleHandle =
+		FLevelStreamingDelegates::OnLevelBeginMakingInvisible.AddUObject(
+			this,
+			&AEMSInstancedSourceManager::HandleLevelBeginMakingInvisible);
 }
 
 void AEMSInstancedSourceManager::EndPlay(
 	const EEndPlayReason::Type EndPlayReason)
 {
 	bIsEndingPlay = true;
-	FWorldDelegates::LevelAddedToWorld.Remove(LevelAddedHandle);
-	FWorldDelegates::LevelRemovedFromWorld.Remove(LevelRemovedHandle);
+	bStreamingRestoreQueued = false;
+	FLevelStreamingDelegates::OnLevelStreamingStateChanged.Remove(
+		StreamingStateChangedHandle);
+	FLevelStreamingDelegates::OnLevelBeginMakingInvisible.Remove(
+		BeginMakingInvisibleHandle);
 	InvalidateInstanceKeyCaches();
 	bIsActiveManager = false;
 	Super::EndPlay(EndPlayReason);
@@ -206,16 +214,37 @@ bool AEMSInstancedSourceManager::ActivateAsWorldManager()
 
 FName AEMSInstancedSourceManager::MakeLevelIdentity(ULevel* Level)
 {
-	// EMS strips the PIE prefix from everything it stores so editor saves stay
-	// loadable in a packaged build, and the save archive does it for soft object
-	// paths on its own. An FName is not a path to the archive, so this one has to
-	// be normalized here or every saved delta is skipped outside the editor.
-	FString LevelIdentity = Level && Level->GetOutermost()
+	if (!Level)
+	{
+		return NAME_None;
+	}
+
+	// A World Partition runtime cell is only a transient loading container. Its
+	// /Memory package and even its runtime-cell layout are not source identity.
+	// Scope the source to the persistent world instead; the resolved actor-instance
+	// GUID identifies the actual placed actor inside that world.
+	if (Level->GetWorldPartitionRuntimeCell())
+	{
+		const UWorld* World = Level->GetWorld();
+		if (World && World->PersistentLevel
+			&& World->PersistentLevel->GetOutermost())
+		{
+			const FString WorldIdentity = UWorld::RemovePIEPrefix(
+				World->PersistentLevel->GetOutermost()->GetName());
+			return FName(*(WorldIdentity + TEXT("|WP")));
+		}
+		return NAME_None;
+	}
+
+	// Conventional streaming levels keep their established identity format so
+	// existing non-WP saves remain compatible. Level instances additionally use
+	// Unreal's resolved level-instance GUID, exactly as before this WP hardening.
+	FString LevelIdentity = Level->GetOutermost()
 		? UWorld::RemovePIEPrefix(Level->GetOutermost()->GetName())
 		: FString();
 
 	const FGuid LevelInstanceGuid =
-		Level ? FActorInstanceGuid::GetLevelInstanceGuid(Level) : FGuid();
+		FActorInstanceGuid::GetLevelInstanceGuid(Level);
 	if (LevelInstanceGuid.IsValid())
 	{
 		LevelIdentity += TEXT("|");
@@ -223,6 +252,36 @@ FName AEMSInstancedSourceManager::MakeLevelIdentity(ULevel* Level)
 	}
 
 	return FName(*LevelIdentity);
+}
+
+bool AEMSInstancedSourceManager::BuildStableOwnerIdentity(
+	const AActor* SourceOwner,
+	FGuid& OutOwnerInstanceGuid,
+	FSoftObjectPath& OutOwnerPath)
+{
+	OutOwnerInstanceGuid.Invalidate();
+	OutOwnerPath.Reset();
+	if (!SourceOwner || !FActorHelpers::IsPlacedActor(SourceOwner))
+	{
+		return false;
+	}
+
+	const ULevel* SourceLevel = SourceOwner->GetLevel();
+	if (SourceLevel && SourceLevel->GetWorldPartitionRuntimeCell())
+	{
+		// World Partition object paths are rooted in transient /Memory packages.
+		// Unreal's resolved actor-instance GUID is the durable actor identity and
+		// already accounts for Level Instance context. If Unreal cannot provide it
+		// at this point, skip rather than persist under an approximate identity.
+		OutOwnerInstanceGuid =
+			FActorInstanceGuid::GetActorInstanceGuid(*SourceOwner);
+		return OutOwnerInstanceGuid.IsValid();
+	}
+
+	// Preserve the established path identity for ordinary streaming levels. It is
+	// stable there and retaining it keeps existing non-WP instance saves valid.
+	OutOwnerPath = FSoftObjectPath(SourceOwner);
+	return OutOwnerPath.IsValid();
 }
 
 void AEMSInstancedSourceManager::RegisterSource(
@@ -243,6 +302,7 @@ void AEMSInstancedSourceManager::RegisterSource(
 		SourceIdsByComponent.Remove(FObjectKey(Existing->Get()));
 		LoadedSources.Remove(SourceId);
 		AmbiguousSources.Add(SourceId);
+		SourceBaselines.Remove(SourceId);
 		ForgetSource(SourceId);
 		LogSourceIssue(
 			SourceId,
@@ -274,7 +334,9 @@ bool AEMSInstancedSourceManager::FindRegisteredSourceId(
 
 bool AEMSInstancedSourceManager::IsStableSourceOwner(const AActor* SourceOwner)
 {
-	if (FActorHelpers::IsPlacedActor(SourceOwner))
+	FGuid OwnerInstanceGuid;
+	FSoftObjectPath OwnerPath;
+	if (BuildStableOwnerIdentity(SourceOwner, OwnerInstanceGuid, OwnerPath))
 	{
 		return true;
 	}
@@ -283,7 +345,7 @@ bool AEMSInstancedSourceManager::IsStableSourceOwner(const AActor* SourceOwner)
 	UE_LOG(
 		LogEMSAddonsInstances,
 		Verbose,
-		TEXT("EMS instanced source owner is not level-placed and is not persisted. Manager=%s Owner=%s"),
+		TEXT("EMS instanced source owner is not level-placed or has no stable persistent identity. Manager=%s Owner=%s"),
 		*GetPathName(),
 		SourceOwner ? *SourceOwner->GetPathName() : TEXT("None"));
 	return false;
@@ -291,13 +353,27 @@ bool AEMSInstancedSourceManager::IsStableSourceOwner(const AActor* SourceOwner)
 
 void AEMSInstancedSourceManager::MarkLoadedSourcesRestored()
 {
-	RestoredSources = LoadedSources;
+	RestoredSources.Reset();
+	for (const TPair<
+		FEMSInstanceSourceId,
+		TWeakObjectPtr<UInstancedStaticMeshComponent>>& Pair : LoadedSources)
+	{
+		RestoredSources.Add(Pair.Key);
+	}
+}
+
+void AEMSInstancedSourceManager::MarkSourceRestored(
+	const FEMSInstanceSourceId& SourceId)
+{
+	if (SourceId.IsValid())
+	{
+		RestoredSources.Add(SourceId);
+	}
 }
 
 void AEMSInstancedSourceManager::ForgetSource(
 	const FEMSInstanceSourceId& SourceId)
 {
-	SourceBaselines.Remove(SourceId);
 	RestoredSources.Remove(SourceId);
 }
 
@@ -312,6 +388,7 @@ AEMSInstancedSourceManager::BuildResolvedSourceState(
 	FResolvedSourceState Result;
 	if (!Component)
 	{
+		Result.bIsValid = false;
 		return Result;
 	}
 
@@ -325,7 +402,8 @@ AEMSInstancedSourceManager::BuildResolvedSourceState(
 		if (!Component->GetInstanceTransform(Index, Transform, bWorldSpace)
 			|| !Transform.IsValid())
 		{
-			continue;
+			Result.bIsValid = false;
+			return Result;
 		}
 
 		FResolvedInstance& Instance = Result.Instances.AddDefaulted_GetRef();
@@ -337,16 +415,22 @@ AEMSInstancedSourceManager::BuildResolvedSourceState(
 		if (Result.CustomDataFloatCount > 0)
 		{
 			const int32 DataOffset = Index * Result.CustomDataFloatCount;
-			if (Component->PerInstanceSMCustomData.IsValidIndex(
-				DataOffset + Result.CustomDataFloatCount - 1))
+			if (!Component->PerInstanceSMCustomData.IsValidIndex(
+					DataOffset + Result.CustomDataFloatCount - 1))
 			{
-				Instance.CustomData.Append(
-					Component->PerInstanceSMCustomData.GetData() + DataOffset,
-					Result.CustomDataFloatCount);
+				Result.bIsValid = false;
+				return Result;
 			}
-			else
+
+			Instance.CustomData.Append(
+				Component->PerInstanceSMCustomData.GetData() + DataOffset,
+				Result.CustomDataFloatCount);
+			if (!IsValidCustomData(
+					Instance.CustomData,
+					Result.CustomDataFloatCount))
 			{
-				Instance.CustomData.Init(0.0f, Result.CustomDataFloatCount);
+				Result.bIsValid = false;
+				return Result;
 			}
 		}
 	}
@@ -453,10 +537,6 @@ void AEMSInstancedSourceManager::RefreshLoadedSources()
 
 	LastSourceRefreshFrame = GFrameCounter;
 
-	const TMap<
-		FEMSInstanceSourceId,
-		TWeakObjectPtr<UInstancedStaticMeshComponent>> PreviousSources =
-		MoveTemp(LoadedSources);
 	LoadedSources.Reset();
 	AmbiguousSources.Reset();
 	SourceIdsByComponent.Reset();
@@ -469,15 +549,23 @@ void AEMSInstancedSourceManager::RefreshLoadedSources()
 		UE_LOG(
 			LogEMSAddonsInstances,
 			Warning,
-			TEXT("%d instanced source owners were skipped because they are not level-placed and have no identity that survives a save. Manager=%s"),
+			TEXT("%d instanced source owners were skipped because they are not level-placed or have no stable persistent identity. Manager=%s"),
 			UnstableSourceOwners,
 			*GetPathName());
 	}
 
+	TSet<FEMSInstanceSourceId> ChangedSources;
+	ChangedSources.Reserve(SavedDeltas.Num());
+	for (const FEMSInstanceSourceDelta& Delta : SavedDeltas)
+	{
+		ChangedSources.Add(Delta.SourceId);
+	}
+
 	for (auto It = SourceBaselines.CreateIterator(); It; ++It)
 	{
-		if (!LoadedSources.Contains(It.Key())
-			|| AmbiguousSources.Contains(It.Key()))
+		if (AmbiguousSources.Contains(It.Key())
+			|| (!LoadedSources.Contains(It.Key())
+				&& !ChangedSources.Contains(It.Key())))
 		{
 			It.RemoveCurrent();
 		}
@@ -485,8 +573,8 @@ void AEMSInstancedSourceManager::RefreshLoadedSources()
 	for (auto It = RestoredSources.CreateIterator(); It; ++It)
 	{
 		const TWeakObjectPtr<UInstancedStaticMeshComponent>* Loaded =
-			LoadedSources.Find(It.Key());
-		if (!Loaded || !Loaded->IsValid() || Loaded->Get() != It.Value().Get())
+			LoadedSources.Find(*It);
+		if (!Loaded || !Loaded->IsValid())
 		{
 			It.RemoveCurrent();
 		}
@@ -496,12 +584,19 @@ void AEMSInstancedSourceManager::RefreshLoadedSources()
 		FEMSInstanceSourceId,
 		TWeakObjectPtr<UInstancedStaticMeshComponent>>& Pair : LoadedSources)
 	{
-		const TWeakObjectPtr<UInstancedStaticMeshComponent>* Previous =
-			PreviousSources.Find(Pair.Key);
-		if (!Previous
-			|| !Previous->IsValid()
-			|| Previous->Get() != Pair.Value.Get()
-			|| !SourceBaselines.Contains(Pair.Key))
+		// The authored baseline is read once, when the source first appears. A
+		// changed source keeps it while streamed out because World Partition may
+		// only hide the same runtime component rather than reload authored content.
+		// Unloaded unchanged sources are pruned above because recapturing their
+		// authored state is safe.
+		//
+		// It must never be re-read merely because the component object changed. A
+		// foliage component is replaced whenever its instance set changes, so a
+		// restore that empties or fills one would otherwise recapture the restored
+		// state as the authored baseline. Every later delta then fails validation
+		// against it, and the next capture sees no difference from that corrupted
+		// baseline, writes an empty delta, and drops the saved state for good.
+		if (!SourceBaselines.Contains(Pair.Key))
 		{
 			SourceBaselines.Add(
 				Pair.Key,
@@ -621,8 +716,9 @@ bool AEMSInstancedSourceManager::CaptureDeltas(const ULevel* OnlyLevel)
 		return false;
 	}
 
-	// A level that is unloading was already discovered, so a level-scoped pass
-	// needs no rediscovery and touches only what that level owns.
+	// A level-scoped pass is invoked before streaming removal, while its already
+	// discovered components are still intact. It therefore needs no rediscovery
+	// and touches only what that level owns.
 	if (bReportResult)
 	{
 		RefreshLoadedSources();
@@ -656,6 +752,7 @@ bool AEMSInstancedSourceManager::CaptureDeltas(const ULevel* OnlyLevel)
 
 		if (!Baseline
 			|| !Component
+			|| !Baseline->bIsValid
 			|| Baseline->bOrdinalOverflow
 			|| Baseline->CustomDataFloatCount < 0
 			|| Baseline->CustomDataFloatCount > MaxCustomDataFloatsPerInstance
@@ -673,14 +770,14 @@ bool AEMSInstancedSourceManager::CaptureDeltas(const ULevel* OnlyLevel)
 		FResolvedSourceState Current = BuildResolvedSourceState(
 			Component,
 			UsesWorldSpaceTransforms(Pair.Key));
-		if (Current.bOrdinalOverflow)
+		if (!Current.bIsValid || Current.bOrdinalOverflow)
 		{
 			++SkippedSources;
 			LogSourceIssue(
 				Pair.Key,
 				LOCTEXT(
 					"InvalidResolvedInstanceState",
-					"The current source state has too many exact duplicate transforms."));
+					"The current source state contains invalid instance data."));
 			continue;
 		}
 		AttachAndPruneGameplayData(Pair.Key, Current);
@@ -801,6 +898,7 @@ bool AEMSInstancedSourceManager::ValidateDelta(
 		+ Delta.ModifiedGameplayData.Num();
 	if (Delta.Version != FEMSInstanceSourceDelta::CurrentVersion
 		|| !Delta.SourceId.IsValid()
+		|| !Baseline.bIsValid
 		|| Delta.BaselineCount != Baseline.Instances.Num()
 		|| Delta.BaselineSignature != Baseline.BaselineSignature
 		|| Delta.CustomDataFloatCount != Baseline.CustomDataFloatCount
@@ -982,6 +1080,7 @@ bool AEMSInstancedSourceManager::ReconcileSource(
 	using namespace EMSAddons::Instances;
 
 	if (!Component
+		|| !Baseline.bIsValid
 		|| Component->NumCustomDataFloats != Baseline.CustomDataFloatCount)
 	{
 		return false;
@@ -995,6 +1094,10 @@ bool AEMSInstancedSourceManager::ReconcileSource(
 
 	const bool bWorldSpace = UsesWorldSpaceTransforms(SourceId);
 	FResolvedSourceState Current = BuildResolvedSourceState(Component, bWorldSpace);
+	if (!Current.bIsValid || Current.bOrdinalOverflow)
+	{
+		return false;
+	}
 
 	TArray<int32> IndicesToRemove;
 	TArray<FTransform> TransformsToAdd;
@@ -1053,6 +1156,10 @@ bool AEMSInstancedSourceManager::ReconcileSource(
 	FResolvedSourceState Verified = bHasInstanceMutations
 		? BuildResolvedSourceState(Component, bWorldSpace)
 		: MoveTemp(Current);
+	if (!Verified.bIsValid || Verified.bOrdinalOverflow)
+	{
+		return false;
+	}
 	// Verification asks whether the component accepted the mutations, not whether
 	// it stored them bit-for-bit. An instanced component keeps transforms as a
 	// float matrix, so writing a saved transform back and reading it returns a
@@ -1148,6 +1255,10 @@ bool AEMSInstancedSourceManager::ReconcileSource(
 
 	Component->MarkRenderStateDirty();
 	Verified = BuildResolvedSourceState(Component, bWorldSpace);
+	if (!Verified.bIsValid || Verified.bOrdinalOverflow)
+	{
+		return false;
+	}
 	bool bMatchesCustomData =
 		Verified.Instances.Num() == Target.Instances.Num();
 	for (int32 Index = 0;
@@ -1288,9 +1399,7 @@ void AEMSInstancedSourceManager::RestoreLoadedSources()
 				continue;
 			}
 
-			if (const TWeakObjectPtr<UInstancedStaticMeshComponent>* Restored =
-				RestoredSources.Find(Pair.Key);
-				Restored && Restored->Get() == Component)
+			if (RestoredSources.Contains(Pair.Key))
 			{
 				continue;
 			}
@@ -1301,18 +1410,39 @@ void AEMSInstancedSourceManager::RestoreLoadedSources()
 				SavedDelta ? *SavedDelta : nullptr;
 			if (Delta && !ValidateDelta(*Delta, *Baseline, TotalChanges))
 			{
+				// Which clause rejected the delta is the whole diagnosis here, and
+				// it is not recoverable from the identity alone. A saved baseline
+				// that no longer matches the live one is the common cause: the
+				// source was rediscovered while it already held restored instances,
+				// so its authored baseline was recaptured as non-empty.
+				FString Detail = FString::Printf(
+					TEXT(" SavedBaselineCount=%d LiveBaselineCount=%d"
+						" SignatureMatch=%d SavedCustomFloats=%d LiveCustomFloats=%d"
+						" Version=%d/%d Removed=%d Added=%d"),
+					Delta->BaselineCount,
+					Baseline->Instances.Num(),
+					Delta->BaselineSignature == Baseline->BaselineSignature ? 1 : 0,
+					Delta->CustomDataFloatCount,
+					Baseline->CustomDataFloatCount,
+					Delta->Version,
+					FEMSInstanceSourceDelta::CurrentVersion,
+					Delta->RemovedInstances.Num(),
+					Delta->AddedInstances.Num());
+
 				bHadSkippedSource = true;
 				LogSourceIssue(
 					Pair.Key,
-					LOCTEXT(
-						"InvalidSavedInstancedDelta",
-						"The saved delta is incompatible or invalid."));
+					FText::Format(
+						LOCTEXT(
+							"InvalidSavedInstancedDelta",
+							"The saved delta is incompatible or invalid.{0}"),
+						FText::FromString(Detail)));
 				continue;
 			}
 
 			if (ReconcileSource(Pair.Key, Delta, Component, *Baseline))
 			{
-				RestoredSources.Add(Pair.Key, Component);
+				RestoredSources.Add(Pair.Key);
 			}
 			else
 			{
@@ -1360,25 +1490,84 @@ void AEMSInstancedSourceManager::RemoveSourcesInLevel(ULevel* Level)
 	}
 }
 
-void AEMSInstancedSourceManager::HandleLevelAdded(ULevel* Level, UWorld* World)
-{
-	if (World == GetWorld() && !bIsEndingPlay)
-	{
-		RestoreLoadedSources();
-	}
-}
-
-void AEMSInstancedSourceManager::HandleLevelRemoved(
+void AEMSInstancedSourceManager::HandleLevelStreamingStateChanged(
+	UWorld* World,
+	const ULevelStreaming* StreamingLevel,
 	ULevel* Level,
-	UWorld* World)
+	ELevelStreamingState PreviousState,
+	ELevelStreamingState NewState)
 {
-	if (World != GetWorld() || bIsEndingPlay)
+	if (World != GetWorld() || bIsEndingPlay || !Level || bHandlingStreamingEvent)
 	{
 		return;
 	}
 
+	// LoadedVisible is the single arrival signal for both ordinary streaming and
+	// World Partition. Discovery is queued below because the delegate itself is
+	// raised from inside Unreal's final visibility transition.
+	if (NewState == ELevelStreamingState::LoadedVisible)
+	{
+		QueueStreamingRestore();
+		return;
+	}
+
+	// Sources are dropped only once the level has actually left the world, never
+	// on MakingInvisible: that transition is broadcast alongside the
+	// OnLevelBeginMakingInvisible capture, and forgetting a source first would
+	// race it and lose the delta the capture exists to take.
+	if (NewState == ELevelStreamingState::LoadedNotVisible
+		|| NewState == ELevelStreamingState::Unloaded
+		|| NewState == ELevelStreamingState::Removed
+		|| NewState == ELevelStreamingState::FailedToLoad)
+	{
+		RemoveSourcesInLevel(Level);
+	}
+}
+
+void AEMSInstancedSourceManager::QueueStreamingRestore()
+{
+	UWorld* World = GetWorld();
+	if (!World || bStreamingRestoreQueued)
+	{
+		return;
+	}
+
+	// The state delegate is raised from inside Unreal's visibility transition.
+	// Defer discovery until that transition has returned so level visibility,
+	// actors, foliage infos, and component registration all describe one state.
+	bStreamingRestoreQueued = true;
+	World->GetTimerManager().SetTimerForNextTick(
+		FTimerDelegate::CreateWeakLambda(
+			this,
+			[this]()
+			{
+				bStreamingRestoreQueued = false;
+				if (bIsEndingPlay || bHandlingStreamingEvent)
+				{
+					return;
+				}
+
+				bHandlingStreamingEvent = true;
+				RestoreLoadedSources();
+				bHandlingStreamingEvent = false;
+			}));
+}
+
+void AEMSInstancedSourceManager::HandleLevelBeginMakingInvisible(
+	UWorld* World,
+	const ULevelStreaming* StreamingLevel,
+	ULevel* Level)
+{
+	if (World != GetWorld() || bIsEndingPlay || !Level || bHandlingStreamingEvent)
+	{
+		return;
+	}
+
+	// Capture before Unreal begins unregistering and clearing components. Anything
+	// later is too late to read a World Partition cell's foliage and HISM state.
+	bHandlingStreamingEvent = true;
 	CaptureDeltas(Level);
-	RemoveSourcesInLevel(Level);
+	bHandlingStreamingEvent = false;
 }
 
 bool AEMSInstancedSourceManager::IsInstancedRestorePending() const
@@ -1395,7 +1584,16 @@ void AEMSInstancedSourceManager::ActorPreSave_Implementation()
 {
 	// A refused capture keeps the previous SavedDeltas on purpose. Replacing good
 	// data with a partial pass would be worse than saving the last complete one.
-	EMSAddons::RunOnGameThread([this]() { CaptureDeltas(); });
+	const TWeakObjectPtr<AEMSInstancedSourceManager> WeakThis(this);
+	EMSAddons::RunOnGameThread(
+		[WeakThis]()
+		{
+			AEMSInstancedSourceManager* Manager = WeakThis.Get();
+			if (IsValid(Manager))
+			{
+				Manager->CaptureDeltas();
+			}
+		});
 }
 
 void AEMSInstancedSourceManager::ActorPreLoad_Implementation()
@@ -1633,9 +1831,7 @@ bool AEMSInstancedSourceManager::WriteInstanceGameplayData(
 	const int32 InstanceIndex,
 	TFunctionRef<bool(FEMSInstanceGameplayData&)> Mutator)
 {
-	// Gameplay data is persistent authoritative state, so a client writing it
-	// would diverge from the save the server actually keeps.
-	if (bIsEndingPlay || !HasInstanceAuthority())
+	if (!CanMutateInstanceState())
 	{
 		return false;
 	}

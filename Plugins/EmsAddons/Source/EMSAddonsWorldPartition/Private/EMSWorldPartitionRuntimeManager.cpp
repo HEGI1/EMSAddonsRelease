@@ -40,12 +40,19 @@ void AEMSWorldPartitionRuntimeManager::ActorPreSave_Implementation()
 	//refuses to operate off the game thread. EMS only marshals Pre-Save itself when
 	//its Pre-Save On Game Thread setting is on, and that setting defaults to off, so
 	//without this a Multi-Thread save would silently keep the previous binaries.
+	const TWeakObjectPtr<AEMSWorldPartitionRuntimeManager> WeakThis(this);
 	EMSAddons::RunOnGameThread(
-		[this]()
+		[WeakThis]()
 		{
-			if (UEMSWorldPartitionRuntimeSubsystem* Subsystem = ResolveRuntimeSubsystem(this))
+			AEMSWorldPartitionRuntimeManager* Manager = WeakThis.Get();
+			if (!IsValid(Manager))
 			{
-				Subsystem->HandleManagerPreSave(this);
+				return;
+			}
+
+			if (UEMSWorldPartitionRuntimeSubsystem* Subsystem = ResolveRuntimeSubsystem(Manager))
+			{
+				Subsystem->HandleManagerPreSave(Manager);
 			}
 		});
 }

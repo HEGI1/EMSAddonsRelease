@@ -80,6 +80,15 @@ public:
 protected:
 	virtual void CollectSources() override;
 
+	/**
+	 * Whether a level is assembled enough to read its sources.
+	 *
+	 * Discovery runs for the whole world whenever any level finishes loading, so
+	 * a level that is still streaming in has to be skipped rather than cached as
+	 * an authored baseline in its partial state.
+	 */
+	static bool IsLevelReadyForSourceDiscovery(const ULevel* Level);
+
 private:
 	static constexpr int32 MaxReplacementSources = 512;
 
@@ -97,6 +106,9 @@ private:
 	/** Recreates automatically generated replacement sources before discovery. */
 	void EnsureSavedReplacementSources();
 
+	/** Resolves a currently loaded source owner from its stable identity. */
+	AActor* FindSourceOwner(const FEMSInstanceSourceId& SourceId) const;
+
 	UInstancedStaticMeshComponent* FindTemplateComponent(
 		const FEMSInstanceSourceId& SourceId) const;
 
@@ -105,6 +117,7 @@ private:
 		const UInstancedStaticMeshComponent* SourceComponent);
 
 	UInstancedStaticMeshComponent* FindCompatibleReplacementSource(
+		const FEMSInstanceSourceId& SourceId,
 		const UInstancedStaticMeshComponent* SourceComponent,
 		UStaticMesh* ReplacementMesh) const;
 

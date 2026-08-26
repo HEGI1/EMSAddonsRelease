@@ -16,5 +16,7 @@ public class EMSAddonsAutosave : ModuleRules
 				"DeveloperSettings",
 				"EasyMultiSave"
 			});
+
+		PrivateDependencyModuleNames.Add("EMSAddonsCore");
 	}
 }

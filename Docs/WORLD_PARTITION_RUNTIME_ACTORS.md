@@ -56,6 +56,7 @@ Use [Actor Spawner](ACTOR_SPAWNER.md) when the actor must explicitly belong to a
 - Spawning is rejected while a save or load is in progress, including the initial World Partition load. Gate spawns on **Is Saving Or Loading**, or wait for the EMS load to complete — an actor spawned into that window would be destroyed by the load that follows.
 - Loading replaces the managed runtime actors with the ones the save holds. Managed actors spawned since that save was written are destroyed and do not return.
 - The managed actor lives in the persistent level while active; EMSAddons supplies the World Partition streaming lifetime.
+- A restored managed actor runs **Actor Pre Load** before its Construction Script and Begin Play, and **Actor Loaded** after its saved state is applied.
 - Stable names help deterministic paths and soft references. Hard references do not automatically rebind after restoration.
 - HLOD and Data-Layer-specific ownership are outside the supported scope.
 - The system is server-authoritative. Replication remains the project's responsibility.

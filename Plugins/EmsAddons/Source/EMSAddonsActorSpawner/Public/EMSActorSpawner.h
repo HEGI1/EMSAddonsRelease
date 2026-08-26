@@ -168,7 +168,7 @@ protected:
 	 * the last good state. Isolated so automation can force a failure.
 	 */
 	virtual bool SaveActorState(AActor* Actor, TArray<uint8>& OutBinary);
-	bool LoadActorState(const FEMSSpawnedActorRecord& Record, AActor* Actor);
+	bool LoadActorState(const FEMSSpawnedActorRecord& Record, AActor* Actor, bool bDeferredSpawn = false);
 
 private:
 	UPROPERTY(Transient)
@@ -199,7 +199,7 @@ private:
 		FEMSSpawnedActorId ActorId,
 		const FTransform& WorldTransform);
 	/** By value on purpose: spawning can move the manifest. See the definition. */
-	AActor* SpawnActorForRecord(FEMSSpawnedActorRecord Record);
+	AActor* SpawnActorForRecord(FEMSSpawnedActorRecord Record, bool bRestore = false);
 	void ApplyRecordState(AActor* Actor, const FEMSSpawnedActorRecord& Record) const;
 	void ApplyRecordAttachment(AActor* Actor, const FEMSSpawnedActorRecord& Record) const;
 

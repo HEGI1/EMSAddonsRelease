@@ -16,7 +16,7 @@ bool AEMSInstanceManager::ReplaceInstanceWithSettings(
 
 	UStaticMesh* ReplacementMesh = Replacement.Mesh.Get();
 	if (!ReplacementMesh
-		|| !HasInstanceAuthority()
+		|| !CanMutateInstanceState()
 		|| !IsValid(Component)
 		|| !Component->GetStaticMesh()
 		|| InstanceIndex < 0
@@ -140,6 +140,11 @@ bool AEMSInstanceManager::ReplaceInstanceWithSettings(
 		ReplacementComponent->RemoveInstance(ReplacementIndex);
 		return false;
 	}
+
+	// This source was created by gameplay, not by a streamed cell arriving. A
+	// later unrelated streaming event must not reconcile its previous saved
+	// target over the replacement that was just committed.
+	MarkSourceRestored(ReplacementSourceId);
 
 	OutReplacementComponent = ReplacementComponent;
 	OutReplacementInstanceIndex = ReplacementIndex;

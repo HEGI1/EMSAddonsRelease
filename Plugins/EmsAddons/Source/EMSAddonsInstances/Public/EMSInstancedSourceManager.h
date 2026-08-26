@@ -10,6 +10,9 @@
 #include "GameFramework/Actor.h"
 #include "Templates/Function.h"
 #include "UObject/ObjectKey.h"
+class ULevelStreaming;
+enum class ELevelStreamingState : uint8;
+
 #include "EMSInstancedSourceManager.generated.h"
 
 class UBillboardComponent;
@@ -174,6 +177,9 @@ protected:
 	 */
 	void MarkLoadedSourcesRestored();
 
+	/** Marks a source created by live gameplay as settled in the current world. */
+	void MarkSourceRestored(const FEMSInstanceSourceId& SourceId);
+
 	/**
 	 * Captures the current delta for every loaded source.
 	 *
@@ -181,9 +187,9 @@ protected:
 	 * SavedDeltas in place rather than replacing good data with a partial pass.
 	 *
 	 * OnlyLevel restricts the pass to the sources that level owns and skips the
-	 * discovery pass, which is what an unloading level needs. Rebuilding the
-	 * resolved state of every source in the world on each streaming event is the
-	 * one thing here that costs a frame in a foliage-heavy World Partition map.
+	 * discovery pass. Streaming uses this from PreLevelRemovedFromWorld while the
+	 * level and its components are still intact, avoiding both a whole-world
+	 * foliage scan and capture from partially torn-down component state.
 	 * A level-scoped pass is bookkeeping rather than a save, so it also leaves
 	 * the reported capture result alone.
 	 */
@@ -223,23 +229,35 @@ protected:
 	/** Whether this machine may change authoritative instance state. */
 	bool HasInstanceAuthority() const;
 
+	/** Whether this manager owns persistent mutation in the current world. */
+	bool CanMutateInstanceState() const
+	{
+		return bIsActiveManager && !bIsEndingPlay && HasInstanceAuthority();
+	}
+
 	/**
-	 * Whether an owner's object path still identifies the same object next session.
+	 * Whether this is a level-placed source with an identity that survives reload.
 	 *
-	 * Source identity is level plus owner path plus component name, so it only
-	 * holds for actors that came from the map. A runtime-spawned owner is named
-	 * from a per-session counter: its delta never matches the same actor again,
-	 * and the next session can hand that generated name to an unrelated actor
-	 * which would then inherit the delta. Such a source is left out entirely
-	 * rather than persisted under an identity that does not survive.
-	 *
-	 * Uses the same placed-actor rule as EMS itself, so the addon persists the
-	 * sources EMS already treats as level-placed. Counts rejections for the
-	 * summary RefreshLoadedSources logs, which is why it is not const.
+	 * World Partition actors use their actor-instance GUID and never a /Memory
+	 * object path. Conventional placed actors may fall back to their object path
+	 * when Unreal has no actor-instance GUID for that level type. Runtime-spawned
+	 * owners are deliberately excluded.
 	 */
 	bool IsStableSourceOwner(const AActor* SourceOwner);
 
+	/** Stable level/cell identity. World Partition cells use the runtime cell GUID. */
 	static FName MakeLevelIdentity(ULevel* Level);
+
+	/**
+	 * Builds the persistent owner portion of a source identity.
+	 *
+	 * World Partition requires a valid actor-instance GUID. The soft path is only
+	 * populated as a fallback for conventional levels where it is itself stable.
+	 */
+	static bool BuildStableOwnerIdentity(
+		const AActor* SourceOwner,
+		FGuid& OutOwnerInstanceGuid,
+		FSoftObjectPath& OutOwnerPath);
 
 	void LogSourceIssue(
 		const FEMSInstanceSourceId& SourceId,
@@ -261,6 +279,7 @@ private:
 		TArray<FResolvedInstance> Instances;
 		uint64 BaselineSignature = 0;
 		int32 CustomDataFloatCount = 0;
+		bool bIsValid = true;
 		bool bOrdinalOverflow = false;
 	};
 
@@ -297,15 +316,24 @@ private:
 	TMap<FEMSInstanceSourceId, TWeakObjectPtr<UInstancedStaticMeshComponent>>
 		LoadedSources;
 	TMap<FEMSInstanceSourceId, FResolvedSourceState> SourceBaselines;
-	TMap<FEMSInstanceSourceId, TWeakObjectPtr<UInstancedStaticMeshComponent>>
-		RestoredSources;
+	/**
+	 * Sources already reconciled since the current load began.
+	 *
+	 * Keyed by identity alone. Tracking the component object here as well would
+	 * mean a foliage component swap looked like a source that still needed
+	 * restoring, and the reconcile would then revert unsaved gameplay changes.
+	 * A source that leaves the loaded world is dropped by ForgetSource.
+	 */
+	TSet<FEMSInstanceSourceId> RestoredSources;
 	TSet<FEMSInstanceSourceId> AmbiguousSources;
 	TMap<FObjectKey, FEMSInstanceSourceId> SourceIdsByComponent;
 	TMap<FEMSInstanceSourceId, TMap<FEMSInstanceKey, FEMSInstanceGameplayData>>
 		LiveGameplayData;
 	mutable TMap<FObjectKey, FInstanceKeyCache> InstanceKeyCaches;
-	FDelegateHandle LevelAddedHandle;
-	FDelegateHandle LevelRemovedHandle;
+
+	FDelegateHandle StreamingStateChangedHandle;
+	FDelegateHandle BeginMakingInvisibleHandle;
+
 	FEMSAddonResult LastRestoreResult;
 	FEMSAddonResult LastCaptureResult;
 	int32 SkippedCaptureSources = 0;
@@ -317,6 +345,8 @@ private:
 	bool bIsActiveManager = false;
 	bool bRestorePending = false;
 	bool bIsEndingPlay = false;
+	bool bHandlingStreamingEvent = false;
+	bool bStreamingRestoreQueued = false;
 
 	/** Whether any source was skipped since the current load began. */
 	bool bHadSkippedRestoreSource = false;
@@ -347,8 +377,27 @@ private:
 		const FEMSInstanceSourceId& SourceId,
 		const FResolvedSourceState& Target,
 		const FResolvedSourceState& Verified);
-	void HandleLevelAdded(ULevel* Level, UWorld* World);
-	void HandleLevelRemoved(ULevel* Level, UWorld* World);
+
+	/**
+	 * Streaming notifications come from the level-streaming delegates rather than
+	 * FWorldDelegates. World Partition runtime cells never broadcast
+	 * LevelAddedToWorld/LevelComponentsUpdated/PreLevelRemovedFromWorld, so a
+	 * handshake built on those never fired for a partitioned world at all. These
+	 * cover conventional streaming levels and World Partition cells alike.
+	 */
+	void HandleLevelStreamingStateChanged(
+		UWorld* World,
+		const ULevelStreaming* StreamingLevel,
+		ULevel* Level,
+		ELevelStreamingState PreviousState,
+		ELevelStreamingState NewState);
+
+	void HandleLevelBeginMakingInvisible(
+		UWorld* World,
+		const ULevelStreaming* StreamingLevel,
+		ULevel* Level);
+
+	void QueueStreamingRestore();
 
 	void ForgetSource(const FEMSInstanceSourceId& SourceId);
 

@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.3.0 - 2026-08-27
+
+### Improved
+
+- **Instanced Meshes and Foliage:** ISM/HISM/foliage sources in a World Partition world now identify their owning actor by Unreal's stable actor-instance GUID instead of an object path into the runtime cell's transient package. Streaming and reloading a cell no longer risks matching a saved delta to the wrong actor or losing it entirely.
+- **Instanced Meshes and Foliage:** a streaming level's instances are now captured just before Unreal tears its components down, instead of after, and restored only once the level has both arrived and finished registering its components. This removes a whole-world foliage rescan on every streaming event and a source of missed captures on World Partition cell unload.
+- **Actor Spawner:** a restored actor now runs **Actor Pre Load** before its Construction Script and Begin Play, matching how EMS Core respawns its own runtime actors.
+- **World Partition Runtime Actors:** a restored managed actor now runs **Actor Pre Load** before its Construction Script and Begin Play, matching EMS Core.
+
+### Fixed
+
+- **Instanced Meshes and Foliage:** World Partition instance saves made before this release are no longer valid and will not restore. Re-place or re-capture affected sources after updating.
+- **Instanced Meshes and Foliage:** a replacement created while another World Partition cell finishes streaming no longer gets reconciled away as an unrestored source.
+- **Actor Spawner:** a restored actor whose saved state fails to load is discarded instead of being left with **Actor Pre Load** raised and **Actor Loaded** never delivered. Its record is kept for the next restore.
+- **Autosave and Checkpoints:** a Trigger Once checkpoint rebuilt by a respawn or a streamed-level reload no longer reports a second activation when its committed checkpoint already matches. **On Checkpoint Activated** now fires only for accepted activations.
+- **Instanced Meshes and Foliage:** hiding and showing a World Partition cell no longer reclassifies its live replaced instances as authored baseline content. Changed sources retain their original baseline until the manager leaves the world.
+- **Physics Streaming Guard:** the Begin Play missing-world check no longer runs in a static world with no World Partition streaming and no streamed sublevels, so a simulating actor placed over empty space is not frozen with gravity off forever. World Partition and conventional streamed-sublevel worlds keep the check.
+- **Actor Spawner:** a restored actor that fails its state load, or is no longer the actor bound to its record afterward, is no longer counted as restored.
+- **Autosave and Checkpoints:** activating a checkpoint no longer broadcasts **On Checkpoint Activated** if the checkpoint actor was destroyed by the activation's own save.
+
 ## 0.2.9 - 2026-08-20
 
 ### Added
@@ -7,6 +27,7 @@
 - **Instanced Meshes and Foliage:** **Replace Instance** replaces one managed ISM, HISM, or painted Static Mesh Foliage instance using compact replacement settings for the mesh, optional local transform offset, and scale preservation. The manager routes the replacement internally, preserves custom data and per-instance gameplay values, and recreates generated replacement sources for later streaming and load operations. Authored Foliage Types are never modified: a replaced foliage instance moves to a target the manager owns on the Instanced Foliage Actor.
 - **World Partition Runtime Actors:** **Get World Partition Runtime Actors** returns the currently live managed actors, not just their count.
 - **World Partition Runtime Actors:** **Is Managed Actor Removal In Progress** lets a managed actor tell, from **End Play**, that EMSAddons is removing it rather than gameplay destroying it. Documented alongside a pattern for NPCs that own an AI Controller.
+- **Physics Streaming Guard:** new **EMS Physics Streaming Guard** component. Added to any actor with simulating physics, it holds that actor in place while the geometry underneath it is streamed out, and releases it as soon as the world below is loaded again. It reacts to streaming events rather than polling, and never freezes an actor that is simply airborne over loaded geometry.
 - **Autosave and Checkpoints:** **Autosave When Leaving Map** optionally saves the current EMS Player/Level data synchronously immediately before normal map travel. It reuses EMS's native save preparation and Multi-Level merge path, ignores the minimum autosave interval, and skips safely during checkpoint travel, active EMS tasks, blockers, or unsafe streaming.
 
 ### Improved
@@ -17,6 +38,7 @@
 
 ### Fixed
 
+- **Geometry Collection Persistence:** **EMS Geometry Collection Actor** no longer falls out of a World Partition world when the floor beneath it streams out. It now carries an **EMS Physics Streaming Guard**, so it holds position while nothing is loaded below it instead of being saved somewhere under the world.
 - **Actor Spawner:** made restore safe when actor load callbacks spawn through the same spawner and modify its manifest.
 - **World Partition Runtime Actors:** pre-save capture now runs on the game thread when EMS Multi-Thread Saving is enabled.
 - **World Partition Runtime Actors:** **Spawn World Partition Runtime Actor** no longer rejects every spawn in a partitioned world. The cell query used a zero radius, which matches no cells at all, so every location appeared to have no visible cell.

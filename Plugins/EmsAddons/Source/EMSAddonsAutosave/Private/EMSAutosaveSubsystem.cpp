@@ -1,6 +1,7 @@
 //Easy Multi Save Addons - Copyright (C) 2026 by Michael Hegemann.
 #include "EMSAutosaveSubsystem.h"
 
+#include "EMSAddonsAuthority.h"
 #include "EMSAddonsAutosave.h"
 #include "EMSAsyncLoadGame.h"
 #include "EMSAsyncSaveGame.h"
@@ -23,6 +24,7 @@ namespace
 	const FName CheckpointAutosaveReason(TEXT("Checkpoint"));
 	const FName PeriodicAutosaveReason(TEXT("Periodic"));
 	const FName MapLoadAutosaveReason(TEXT("MapLoad"));
+	constexpr float MapLoadAutosaveRetryDelay = 0.1f;
 }
 
 void UEMSAutosaveSubsystem::Initialize(FSubsystemCollectionBase& Collection)
@@ -105,7 +107,11 @@ bool UEMSAutosaveSubsystem::RequestAutosave(FName Reason)
 
 	UWorld* World = GetWorld();
 	UEMSObject* EMS = UEMSObject::Get(this);
-	if (!World || !World->IsGameWorld() || World->bIsTearingDown || !EMS)
+	if (!World
+		|| !World->IsGameWorld()
+		|| World->bIsTearingDown
+		|| !EMSAddons::HasPersistenceAuthority(World->GetNetMode())
+		|| !EMS)
 	{
 		return false;
 	}
@@ -121,6 +127,8 @@ bool UEMSAutosaveSubsystem::ActivateCheckpoint(AEMSCheckpoint* Checkpoint)
 		|| IsCheckpointLoadInProgress()
 		|| FAsyncSaveHelpers::IsAsyncLoadTaskActive(ESaveGameMode::MODE_All, false)
 		|| !IsValid(Checkpoint)
+		|| Checkpoint->IsActivationPending()
+		|| !EMSAddons::HasPersistenceAuthority(Checkpoint)
 		|| Checkpoint->GetWorld() != GetWorld()
 		|| !Checkpoint->CheckpointId.IsValid())
 	{
@@ -153,23 +161,42 @@ bool UEMSAutosaveSubsystem::ActivateCheckpoint(AEMSCheckpoint* Checkpoint)
 		return false;
 	}
 
-	// Everything that can still reject the activation outright has been checked, so
-	// this event only fires for activations the subsystem accepts.
-	OnCheckpointActivated.Broadcast(Record);
+	// Close re-entrancy before Blueprint callbacks can activate this actor again.
+	Checkpoint->MarkActivationPending();
 
 	const FEMSCheckpointRecord Existing = GetCheckpointForSlot(SaveSlot);
 	if (Existing.IsValid()
 		&& Existing.HasSameIdentity(Record)
 		&& !Checkpoint->bForceSaveNextActivation)
 	{
+		if (Checkpoint->bTriggerOnce)
+		{
+			// The actor may have been reconstructed by a respawn or a streamed-level
+			// lifecycle after the checkpoint save. The committed slot metadata is the
+			// durable source of truth in that case; do not let the reconstructed actor
+			// broadcast a second one-shot activation.
+			Checkpoint->MarkActivationCommitted();
+			return false;
+		}
+
 		Checkpoint->MarkActivationCommitted();
+		OnCheckpointActivated.Broadcast(Record);
 		return true;
 	}
 
 	// A checkpoint is a saved restore point by definition. The general autosave
 	// enable switch only controls Request Autosave and the automatic helper timers;
 	// it never turns a checkpoint into an event-only trigger.
-	return QueueRequest(CheckpointAutosaveReason, SaveSlot, &Record, Checkpoint);
+	// Queue without starting so accepted activation is observable before the EMS
+	// save begins, matching the public delegate contract.
+	if (!EnqueueRequest(CheckpointAutosaveReason, SaveSlot, &Record, Checkpoint))
+	{
+		Checkpoint->MarkActivationFailed();
+		return false;
+	}
+	OnCheckpointActivated.Broadcast(Record);
+	TryStartPendingSave();
+	return true;
 }
 
 bool UEMSAutosaveSubsystem::QueueRequest(
@@ -231,7 +258,12 @@ bool UEMSAutosaveSubsystem::CanStartSave(
 	OutRetryDelay = -1.0f;
 	const UEMSAutosaveSettings* Settings = GetDefault<UEMSAutosaveSettings>();
 	UWorld* World = GetWorld();
-	if (!Settings || bIsShuttingDown || !World || !World->IsGameWorld() || World->bIsTearingDown)
+	if (!Settings
+		|| bIsShuttingDown
+		|| !World
+		|| !World->IsGameWorld()
+		|| World->bIsTearingDown
+		|| !EMSAddons::HasPersistenceAuthority(World->GetNetMode()))
 	{
 		return false;
 	}
@@ -372,7 +404,7 @@ void UEMSAutosaveSubsystem::StartSave(
 	{
 		if (ReservedGeneration.IsValid())
 		{
-			AbandonCheckpointGeneration(SaveSlot);
+			RollbackCheckpointGeneration(SaveSlot);
 		}
 		// Enqueue without starting. QueueRequest would call TryStartPendingSave,
 		// which reaches StartSave again with bSaveActive still false and recurses
@@ -501,11 +533,7 @@ void UEMSAutosaveSubsystem::HandleSaveCompleted()
 		{
 			CompletedActor->MarkActivationFailed();
 		}
-		if (bCheckpointSave)
-		{
-			AbandonCheckpointGeneration(CompletedSlot);
-		}
-		LogMessage(TEXT("Autosave completed after the active EMS save slot changed; checkpoint metadata was not committed."), true);
+		LogMessage(TEXT("Autosave completed after the active EMS save slot changed; checkpoint metadata was not committed and the reserved generation remains stale."), true);
 		OnAutosaveFailed.Broadcast(CompletedReason);
 		return;
 	}
@@ -552,7 +580,10 @@ void UEMSAutosaveSubsystem::HandleSaveFailed()
 	}
 	if (bCheckpointSave)
 	{
-		AbandonCheckpointGeneration(FailedSlot);
+		// The EMS task already started and may have written one of its separate
+		// core files. Keep the reserved generation unresolved so the old checkpoint
+		// can never be presented as matching uncertain slot state.
+		LogMessage(TEXT("Checkpoint EMS save failed after starting; the stored checkpoint is treated as stale until the next successful checkpoint."), true);
 	}
 	OnAutosaveFailed.Broadcast(FailedReason);
 }
@@ -582,7 +613,7 @@ bool UEMSAutosaveSubsystem::BeginCheckpointGeneration(
 	return true;
 }
 
-void UEMSAutosaveSubsystem::AbandonCheckpointGeneration(const FString& SaveSlot)
+void UEMSAutosaveSubsystem::RollbackCheckpointGeneration(const FString& SaveSlot)
 {
 	UEMSObject* EMS = UEMSObject::Get(this);
 	UEMSCheckpointSaveGame* Save = ResolveCheckpointSave(SaveSlot);
@@ -595,9 +626,9 @@ void UEMSAutosaveSubsystem::AbandonCheckpointGeneration(const FString& SaveSlot)
 		Save,
 		[EMS, Save]() { return EMS->SaveCustom(Save); }))
 	{
-		// The reservation outlives the save it was made for, so the stored record
-		// no longer proves it belongs to the slot's state and is ignored from here on.
-		LogMessage(TEXT("The reserved checkpoint generation could not be released after a failed save; the stored checkpoint is treated as stale."), true);
+		// The EMS task never started, but if rollback itself cannot be written the
+		// unresolved generation is still the safe fallback and remains stale.
+		LogMessage(TEXT("The unstarted checkpoint generation could not be rolled back; the stored checkpoint is treated as stale."), true);
 	}
 }
 
@@ -747,7 +778,12 @@ void UEMSAutosaveSubsystem::RemoveAutosaveBlocker(FName Blocker)
 
 bool UEMSAutosaveSubsystem::LoadLastCheckpoint()
 {
-	if (bIsShuttingDown || ActiveLoadTask || FAsyncSaveHelpers::IsAsyncTaskActive(ESaveGameMode::MODE_All, false))
+	UWorld* World = GetWorld();
+	if (bIsShuttingDown
+		|| !World
+		|| !EMSAddons::HasPersistenceAuthority(World->GetNetMode())
+		|| ActiveLoadTask
+		|| FAsyncSaveHelpers::IsAsyncTaskActive(ESaveGameMode::MODE_All, false))
 	{
 		return false;
 	}
@@ -762,7 +798,7 @@ bool UEMSAutosaveSubsystem::LoadLastCheckpoint()
 	CheckpointAwaitingPlayerPlacement = FEMSCheckpointRecord();
 	CheckpointLoadSlot = EMS->GetCurrentSaveGameName();
 	CheckpointBeingLoaded = GetCheckpointForSlot(CheckpointLoadSlot);
-	if (CheckpointLoadSlot.IsEmpty() || !CheckpointBeingLoaded.IsValid() || !GetWorld())
+	if (CheckpointLoadSlot.IsEmpty() || !CheckpointBeingLoaded.IsValid())
 	{
 		CheckpointLoadSlot.Reset();
 		CheckpointBeingLoaded = FEMSCheckpointRecord();
@@ -776,7 +812,7 @@ bool UEMSAutosaveSubsystem::LoadLastCheckpoint()
 		CancelPendingRequest(TEXT("Pending autosave canceled because a checkpoint load started."), false);
 	}
 
-	if (!EMSCheckpoint::IsSameWorld(GetWorld(), CheckpointBeingLoaded.World))
+	if (!EMSCheckpoint::IsSameWorld(World, CheckpointBeingLoaded.World))
 	{
 		bCheckpointLoadAfterTravel = true;
 		const TSoftObjectPtr<UWorld> TargetWorld(CheckpointBeingLoaded.World);
@@ -793,7 +829,12 @@ void UEMSAutosaveSubsystem::BeginCheckpointLoad()
 	bCheckpointLoadAfterTravel = false;
 	const UEMSAutosaveSettings* Settings = GetDefault<UEMSAutosaveSettings>();
 	UEMSObject* EMS = UEMSObject::Get(this);
-	if (!Settings || !CheckpointBeingLoaded.IsValid() || !EMS)
+	UWorld* World = GetWorld();
+	if (!Settings
+		|| !CheckpointBeingLoaded.IsValid()
+		|| !EMS
+		|| !World
+		|| !EMSAddons::HasPersistenceAuthority(World->GetNetMode()))
 	{
 		FailCheckpointLoad(TEXT("The last checkpoint could not be loaded because its state is invalid."));
 		return;
@@ -856,6 +897,12 @@ void UEMSAutosaveSubsystem::HandleEMSLevelLoaded(const TArray<TSoftObjectPtr<AAc
 
 void UEMSAutosaveSubsystem::HandleEMSActorsSaved(ESaveGameMode Mode, bool bSuccess)
 {
+	UWorld* World = GetWorld();
+	if (!World || !EMSAddons::HasPersistenceAuthority(World->GetNetMode()))
+	{
+		return;
+	}
+
 	const FString SavedSlot = !AddonSaveSlotAwaitingActorsSaved.IsEmpty()
 		? AddonSaveSlotAwaitingActorsSaved
 		: (UEMSObject::Get(this) ? UEMSObject::Get(this)->GetCurrentSaveGameName() : FString());
@@ -1045,7 +1092,7 @@ void UEMSAutosaveSubsystem::HandleWorldCleanup(
 
 void UEMSAutosaveSubsystem::ConfigureWorldTimers(UWorld* World)
 {
-	if (!World)
+	if (!World || !EMSAddons::HasPersistenceAuthority(World->GetNetMode()))
 	{
 		return;
 	}
@@ -1075,6 +1122,28 @@ void UEMSAutosaveSubsystem::HandlePeriodicAutosave()
 
 void UEMSAutosaveSubsystem::HandleMapLoadAutosave()
 {
+	UWorld* World = GetWorld();
+	if (bIsShuttingDown
+		|| IsCheckpointLoadInProgress()
+		|| !World
+		|| !World->IsGameWorld()
+		|| World->bIsTearingDown
+		|| !EMSAddons::HasPersistenceAuthority(World->GetNetMode()))
+	{
+		return;
+	}
+
+	if (FAsyncSaveHelpers::IsAsyncLoadTaskActive(ESaveGameMode::MODE_All, false))
+	{
+		World->GetTimerManager().SetTimer(
+			MapLoadTimer,
+			this,
+			&UEMSAutosaveSubsystem::HandleMapLoadAutosave,
+			MapLoadAutosaveRetryDelay,
+			false);
+		return;
+	}
+
 	RequestAutosave(MapLoadAutosaveReason);
 }
 

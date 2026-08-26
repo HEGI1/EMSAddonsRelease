@@ -15,6 +15,7 @@ public class EMSAddonsGeometry : ModuleRules
 				"Engine",
 				"EasyMultiSave",
 				"EMSAddonsCore",
+				"EMSAddonsPhysics",
 				"GeometryCollectionEngine"
 			});
 

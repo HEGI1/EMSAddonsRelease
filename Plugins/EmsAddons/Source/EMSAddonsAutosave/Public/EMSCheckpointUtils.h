@@ -53,9 +53,9 @@ namespace EMSCheckpoint
 		TFunctionRef<bool()> WriteToDisk);
 
 	/**
-	 * Releases a reserved generation after its EMS save failed. A previously
-	 * committed checkpoint becomes current again only when it was current before
-	 * the reservation; stale records are removed by BeginGeneration first.
+	 * Rolls back a reserved generation only when the associated EMS save task never
+	 * started. Once the EMS task has started, the reservation must remain unresolved
+	 * on failure because one of EMS's separate core files may already have changed.
 	 */
 	EMSADDONSAUTOSAVE_API bool AbandonGeneration(
 		UEMSCheckpointSaveGame* Save,

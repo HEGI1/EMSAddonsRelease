@@ -1,6 +1,7 @@
 //Easy Multi Save Addons - Copyright (C) 2026 by Michael Hegemann.
 #include "EMSAutosaveMapTravel.h"
 
+#include "EMSAddonsAuthority.h"
 #include "EMSAddonsAutosave.h"
 #include "EMSAutosaveSettings.h"
 #include "EMSAutosaveSubsystem.h"
@@ -49,7 +50,10 @@ namespace
 void EMSAutosaveMapTravel::HandlePreLoadMap(const FWorldContext& WorldContext, const FString& MapName)
 {
 	UWorld* World = WorldContext.World();
-	if (!World || !World->IsGameWorld() || World->bIsTearingDown)
+	if (!World
+		|| !World->IsGameWorld()
+		|| World->bIsTearingDown
+		|| !EMSAddons::HasPersistenceAuthority(World->GetNetMode()))
 	{
 		return;
 	}

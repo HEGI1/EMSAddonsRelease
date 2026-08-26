@@ -30,6 +30,13 @@ struct EMSADDONSINSTANCES_API FEMSInstanceSourceId
 	UPROPERTY(SaveGame)
 	FName LevelIdentity;
 
+	/**
+	 * Conventional-level fallback only.
+	 *
+	 * World Partition runtime-cell actors deliberately leave this empty because
+	 * their object paths live in transient /Memory packages. Their persistent
+	 * identity is OwnerInstanceGuid instead.
+	 */
 	UPROPERTY(SaveGame)
 	FSoftObjectPath OwnerPath;
 
@@ -42,29 +49,57 @@ struct EMSADDONSINSTANCES_API FEMSInstanceSourceId
 	UPROPERTY(SaveGame)
 	EEMSInstanceSourceKind SourceKind = EEMSInstanceSourceKind::ISM;
 
+	/** Stable placed-actor identity used by World Partition and level instances. */
+	UPROPERTY(SaveGame)
+	FGuid OwnerInstanceGuid;
+
+	bool HasStableOwnerIdentity() const
+	{
+		// World Partition sources carry the GUID and never a path. Conventional
+		// levels carry the path, which is stable there.
+		return OwnerInstanceGuid.IsValid() || OwnerPath.IsValid();
+	}
+
 	bool IsValid() const
 	{
 		return !LevelIdentity.IsNone()
-			&& OwnerPath.IsValid()
+			&& HasStableOwnerIdentity()
 			&& !SourceName.IsNone()
 			&& MeshPath.IsValid();
 	}
 
 	bool operator==(const FEMSInstanceSourceId& Other) const
 	{
-		return LevelIdentity == Other.LevelIdentity
-			&& OwnerPath == Other.OwnerPath
-			&& SourceName == Other.SourceName
-			&& MeshPath == Other.MeshPath
-			&& SourceKind == Other.SourceKind;
+		if (LevelIdentity != Other.LevelIdentity
+			|| SourceName != Other.SourceName
+			|| MeshPath != Other.MeshPath
+			|| SourceKind != Other.SourceKind)
+		{
+			return false;
+		}
+
+		// A GUID identity never falls back to comparing an object path. This keeps
+		// a transient path from accidentally matching a stable source.
+		if (OwnerInstanceGuid.IsValid() || Other.OwnerInstanceGuid.IsValid())
+		{
+			return OwnerInstanceGuid == Other.OwnerInstanceGuid;
+		}
+
+		return OwnerPath == Other.OwnerPath;
 	}
 
 	FString ToString() const
 	{
+		const FString OwnerIdentity = OwnerInstanceGuid.IsValid()
+			? FString::Printf(
+				TEXT("ActorGuid:%s"),
+				*OwnerInstanceGuid.ToString(EGuidFormats::Digits))
+			: FString::Printf(TEXT("ActorPath:%s"), *OwnerPath.ToString());
+
 		return FString::Printf(
 			TEXT("%s|%s|%s|%s|%d"),
 			*LevelIdentity.ToString(),
-			*OwnerPath.ToString(),
+			*OwnerIdentity,
 			*SourceName.ToString(),
 			*MeshPath.ToString(),
 			static_cast<int32>(SourceKind));
@@ -73,7 +108,11 @@ struct EMSADDONSINSTANCES_API FEMSInstanceSourceId
 	friend uint32 GetTypeHash(const FEMSInstanceSourceId& Id)
 	{
 		uint32 Hash = GetTypeHash(Id.LevelIdentity);
-		Hash = HashCombine(Hash, GetTypeHash(Id.OwnerPath));
+		Hash = HashCombine(
+			Hash,
+			Id.OwnerInstanceGuid.IsValid()
+				? GetTypeHash(Id.OwnerInstanceGuid)
+				: GetTypeHash(Id.OwnerPath));
 		Hash = HashCombine(Hash, GetTypeHash(Id.SourceName));
 		Hash = HashCombine(Hash, GetTypeHash(Id.MeshPath));
 		return HashCombine(Hash, GetTypeHash(static_cast<uint8>(Id.SourceKind)));

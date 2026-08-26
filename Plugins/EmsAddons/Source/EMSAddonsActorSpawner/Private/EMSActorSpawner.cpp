@@ -429,7 +429,7 @@ AActor* AEMSActorSpawner::SpawnActorWithId(
 // Takes the record by value. Spawning below runs construction scripts and Begin
 // Play, which can spawn through this same spawner and move the manifest's
 // elements, so this must not hold a reference into it across that call.
-AActor* AEMSActorSpawner::SpawnActorForRecord(FEMSSpawnedActorRecord Record)
+AActor* AEMSActorSpawner::SpawnActorForRecord(FEMSSpawnedActorRecord Record, bool bRestore)
 {
 	if (!CanMutateSpawnedActors())
 	{
@@ -460,9 +460,29 @@ AActor* AEMSActorSpawner::SpawnActorForRecord(FEMSSpawnedActorRecord Record)
 	SpawnParameters.Name = StableName;
 	SpawnParameters.NameMode = FActorSpawnParameters::ESpawnActorNameMode::Required_ErrorAndReturnNull;
 	SpawnParameters.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+	SpawnParameters.bDeferConstruction = bRestore;
 
 	AActor* SpawnedActor = World->SpawnActor<AActor>(ActorClass, Record.SavedTransform, SpawnParameters);
-	if (!SpawnedActor || SpawnedActor->GetLevel() != TargetLevel)
+	if (SpawnedActor && bRestore)
+	{
+		UEMSObject* EMSObject = ResolveEMSObject();
+		if (!EMSObject)
+		{
+			SpawnedActor->Destroy();
+			return nullptr;
+		}
+		// Guarded like EMS Core does it: a spawned actor is not required to
+		// implement the save interface, and Execute_ asserts that it does.
+		if (UEMSObject::HasSaveInterface(SpawnedActor))
+		{
+			IEMSActorSaveInterface::Execute_ActorPreLoad(SpawnedActor);
+		}
+		if (IsValid(SpawnedActor))
+		{
+			SpawnedActor->FinishSpawning(Record.SavedTransform, false);
+		}
+	}
+	if (!IsValid(SpawnedActor) || SpawnedActor->GetLevel() != TargetLevel)
 	{
 		if (SpawnedActor)
 		{
@@ -625,9 +645,14 @@ void AEMSActorSpawner::CaptureLiveActorsForSave()
 	RebuildLiveBindings();
 	PruneObsoleteAbsentRecords();
 
-	for (const TPair<FGuid, TObjectPtr<AActor>>& Pair : LiveActorsById)
+	// EMS save callbacks can execute gameplay code and re-enter this spawner.
+	// Snapshot the ids so no LiveActorsById iterator survives SaveActorState().
+	TArray<FGuid> CaptureIds;
+	LiveActorsById.GetKeys(CaptureIds);
+
+	for (const FGuid& LocalId : CaptureIds)
 	{
-		AActor* Actor = Pair.Value.Get();
+		AActor* Actor = GetSpawnedActor(FEMSSpawnedActorId(LocalId));
 		if (!IsValid(Actor))
 		{
 			continue;
@@ -648,7 +673,7 @@ void AEMSActorSpawner::CaptureLiveActorsForSave()
 			continue;
 		}
 
-		FEMSSpawnedActorRecord* Record = FindRecordMutable(Pair.Key);
+		FEMSSpawnedActorRecord* Record = FindRecordMutable(LocalId);
 		if (!Record)
 		{
 			if (SpawnedActorManifest.Num() >= MaxSpawnedActors)
@@ -663,7 +688,7 @@ void AEMSActorSpawner::CaptureLiveActorsForSave()
 				continue;
 			}
 			Record = &SpawnedActorManifest.AddDefaulted_GetRef();
-			Record->LocalId = Pair.Key;
+			Record->LocalId = LocalId;
 		}
 		UpdateRecordFromActor(*Record, Actor);
 		Record->ActorBinaryData = MoveTemp(CapturedBinary);
@@ -993,7 +1018,10 @@ bool AEMSActorSpawner::SaveActorState(AActor* Actor, TArray<uint8>& OutBinary)
 	return EMSAddons::PackActorSaveData(SaveData, OutBinary);
 }
 
-bool AEMSActorSpawner::LoadActorState(const FEMSSpawnedActorRecord& Record, AActor* Actor)
+bool AEMSActorSpawner::LoadActorState(
+	const FEMSSpawnedActorRecord& Record,
+	AActor* Actor,
+	bool bDeferredSpawn)
 {
 	if (!IsValid(Actor) || !Record.LocalId.IsValid())
 	{
@@ -1012,15 +1040,24 @@ bool AEMSActorSpawner::LoadActorState(const FEMSSpawnedActorRecord& Record, AAct
 		return false;
 	}
 
-	// LoadActorFromBinary already fires the spawned actor's own EMS
-	// ActorPreLoad/ActorLoaded interface events, so the spawner adds none.
-	EMSObject->LoadActorFromBinary(Actor, SaveData);
+	// Newly reconstructed actors execute ActorPreLoad before FinishSpawning,
+	// matching EMS Core. Tell the binary loader not to execute it a second time.
+	EMSObject->LoadActorFromBinary(Actor, SaveData, bDeferredSpawn);
 	return true;
 }
 
 void AEMSActorSpawner::ActorPreSave_Implementation()
 {
-	EMSAddons::RunOnGameThread([this]() { CaptureSpawnerStateOnGameThread(); });
+	const TWeakObjectPtr<AEMSActorSpawner> WeakThis(this);
+	EMSAddons::RunOnGameThread(
+		[WeakThis]()
+		{
+			AEMSActorSpawner* Spawner = WeakThis.Get();
+			if (IsValid(Spawner))
+			{
+				Spawner->CaptureSpawnerStateOnGameThread();
+			}
+		});
 }
 
 void AEMSActorSpawner::CaptureSpawnerStateOnGameThread()
@@ -1084,6 +1121,7 @@ void AEMSActorSpawner::RestoreSpawnedActors()
 	TSet<FGuid> DesiredIds;
 	TSet<FGuid> DuplicateIds;
 	TSet<FGuid> StateLoadEligibleIds;
+	TSet<FGuid> DeferredRestoreIds;
 	const int32 ProcessCount = FMath::Min(SpawnedActorManifest.Num(), FMath::Max(1, MaxSpawnedActors));
 	if (ProcessCount < SpawnedActorManifest.Num())
 	{
@@ -1146,6 +1184,7 @@ void AEMSActorSpawner::RestoreSpawnedActors()
 
 		DesiredIds.Add(Record.LocalId);
 		AActor* ExistingActor = GetSpawnedActor(FEMSSpawnedActorId(Record.LocalId));
+		bool bDeferredRestore = false;
 		UClass* SavedClass = FSpawnHelpers::ResolveSpawnClass(Record.ActorClass.ToString());
 		if (ExistingActor
 			&& (ExistingActor->GetClass() != SavedClass
@@ -1161,7 +1200,8 @@ void AEMSActorSpawner::RestoreSpawnedActors()
 		}
 		if (!ExistingActor)
 		{
-			ExistingActor = SpawnActorForRecord(Record);
+			ExistingActor = SpawnActorForRecord(Record, true);
+			bDeferredRestore = ExistingActor != nullptr;
 		}
 		else
 		{
@@ -1174,6 +1214,10 @@ void AEMSActorSpawner::RestoreSpawnedActors()
 			continue;
 		}
 		StateLoadEligibleIds.Add(Record.LocalId);
+		if (bDeferredRestore)
+		{
+			DeferredRestoreIds.Add(Record.LocalId);
+		}
 	}
 
 	TArray<FGuid> LiveIds;
@@ -1200,22 +1244,43 @@ void AEMSActorSpawner::RestoreSpawnedActors()
 		{
 			continue;
 		}
+		const bool bDeferredRestore = DeferredRestoreIds.Remove(Record.LocalId) > 0;
 		AActor* Actor = GetSpawnedActor(FEMSSpawnedActorId(Record.LocalId));
 		if (!Actor)
 		{
+			bRestoreHadFailure |= HasSpawnedActorRecord(FEMSSpawnedActorId(Record.LocalId));
 			continue;
 		}
-		if (LoadActorState(Record, Actor))
+		const bool bLoaded = LoadActorState(Record, Actor, bDeferredRestore);
+		const bool bStillBound = IsValid(Actor)
+			&& GetSpawnedActor(FEMSSpawnedActorId(Record.LocalId)) == Actor;
+		if (bLoaded && bStillBound)
 		{
 			RestoredActorIds.Add(Record.LocalId);
 		}
 		else
 		{
 			bRestoreHadFailure = true;
+			if (bDeferredRestore)
+			{
+				// A newly spawned actor has already run Actor Pre Load. Leaving it
+				// live without Actor Loaded is a half-restored actor, so it is
+				// discarded and its record kept for the next restore.
+				DestroyLiveActor(Record.LocalId, EEMSSpawnerDestructionContext::Internal, false);
+				continue;
+			}
 		}
 
 		// After the binary state, which may have moved the actor.
 		ApplyRecordAttachment(Actor, Record);
+	}
+
+	// Same case for a deferred spawn whose record moved out from under the loop
+	// above: it never reached its state load, so it never reached Actor Loaded.
+	for (const FGuid& LocalId : DeferredRestoreIds)
+	{
+		bRestoreHadFailure = true;
+		DestroyLiveActor(LocalId, EEMSSpawnerDestructionContext::Internal, false);
 	}
 
 	FinishRestore();

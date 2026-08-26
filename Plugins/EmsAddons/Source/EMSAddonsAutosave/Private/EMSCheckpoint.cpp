@@ -169,12 +169,13 @@ bool AEMSCheckpoint::ActivateCheckpoint()
 	EnsureCheckpointId();
 	UGameInstance* GameInstance = GetGameInstance();
 	UEMSAutosaveSubsystem* Autosave = GameInstance ? GameInstance->GetSubsystem<UEMSAutosaveSubsystem>() : nullptr;
-	if (!Autosave || !Autosave->ActivateCheckpoint(this))
+	const TWeakObjectPtr<AEMSCheckpoint> WeakThis(this);
+	if (!Autosave || !Autosave->ActivateCheckpoint(this) || !WeakThis.IsValid())
 	{
 		return false;
 	}
 
-	OnCheckpointActivated.Broadcast();
+	WeakThis->OnCheckpointActivated.Broadcast();
 	return true;
 }
 
@@ -207,6 +208,10 @@ void AEMSCheckpoint::ResetCheckpoint()
 void AEMSCheckpoint::MarkActivationPending()
 {
 	bActivationPending = true;
+	if (bTriggerOnce)
+	{
+		bActivatedThisSession = true;
+	}
 }
 
 void AEMSCheckpoint::MarkActivationCommitted()
@@ -219,6 +224,10 @@ void AEMSCheckpoint::MarkActivationCommitted()
 void AEMSCheckpoint::MarkActivationFailed()
 {
 	bActivationPending = false;
+	if (bTriggerOnce)
+	{
+		bActivatedThisSession = false;
+	}
 }
 
 bool AEMSCheckpoint::HasUniqueCheckpointId() const

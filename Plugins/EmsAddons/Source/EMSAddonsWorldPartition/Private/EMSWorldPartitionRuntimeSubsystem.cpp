@@ -183,7 +183,8 @@ bool UEMSWorldPartitionRuntimeSubsystem::CanOperate() const
 		&& !World->bIsTearingDown
 		&& DoesSupportWorldType(World->WorldType)
 		&& IsAuthorityNetMode(World->GetNetMode())
-		&& IsValid(World->GetWorldPartition());
+		&& IsValid(World->GetWorldPartition())
+		&& World->GetWorldPartition()->bEnableStreaming;
 }
 
 bool UEMSWorldPartitionRuntimeSubsystem::EnsureReady()
@@ -583,7 +584,10 @@ bool UEMSWorldPartitionRuntimeSubsystem::SaveActorState(AActor* Actor, TArray<ui
 	return EMSAddons::PackActorSaveData(SaveData, OutBinary);
 }
 
-bool UEMSWorldPartitionRuntimeSubsystem::LoadActorState(AActor* Actor, const TArray<uint8>& Binary) const
+bool UEMSWorldPartitionRuntimeSubsystem::LoadActorState(
+	AActor* Actor,
+	const TArray<uint8>& Binary,
+	bool bDeferredSpawn) const
 {
 	if (!IsValid(Actor))
 	{
@@ -599,7 +603,7 @@ bool UEMSWorldPartitionRuntimeSubsystem::LoadActorState(AActor* Actor, const TAr
 	{
 		return false;
 	}
-	EMSObject->LoadActorFromBinary(Actor, SaveData);
+	EMSObject->LoadActorFromBinary(Actor, SaveData, bDeferredSpawn);
 	return true;
 }
 
@@ -791,7 +795,25 @@ bool UEMSWorldPartitionRuntimeSubsystem::RestoreRecord(const FEMSWorldPartitionR
 	Parameters.Name = StableName;
 	Parameters.NameMode = FActorSpawnParameters::ESpawnActorNameMode::Required_ErrorAndReturnNull;
 	Parameters.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
+	Parameters.bDeferConstruction = true;
 	AActor* Actor = GetWorld()->SpawnActor<AActor>(ActorClass, Record.SavedTransform, Parameters);
+	if (!IsValid(Actor) || Actor->GetLevel() != GetWorld()->PersistentLevel)
+	{
+		DiscardActor(Actor);
+		return false;
+	}
+	UEMSObject* EMSObject = UEMSObject::Get(Actor);
+	if (!EMSObject)
+	{
+		DiscardActor(Actor);
+		return false;
+	}
+	IEMSActorSaveInterface::Execute_ActorPreLoad(Actor);
+	if (!IsValid(Actor))
+	{
+		return false;
+	}
+	Actor->FinishSpawning(Record.SavedTransform, false);
 	if (!IsValid(Actor) || Actor->GetLevel() != GetWorld()->PersistentLevel)
 	{
 		DiscardActor(Actor);
@@ -806,7 +828,7 @@ bool UEMSWorldPartitionRuntimeSubsystem::RestoreRecord(const FEMSWorldPartitionR
 	//A load callback may destroy the actor, which is the addon's own doing here.
 	const bool bPreviouslySuppressed = bSuppressGameplayDestruction;
 	bSuppressGameplayDestruction = true;
-	const bool bLoaded = LoadActorState(Actor, Record.ActorBinaryData);
+	const bool bLoaded = LoadActorState(Actor, Record.ActorBinaryData, true);
 	bSuppressGameplayDestruction = bPreviouslySuppressed;
 	const bool bStillBound = IsValid(Actor)
 		&& LiveIdsByActor.FindRef(FObjectKey(Actor)) == Record.LocalId;
