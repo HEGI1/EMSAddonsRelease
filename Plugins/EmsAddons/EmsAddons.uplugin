@@ -1,7 +1,7 @@
 {
 	"FileVersion": 3,
-	"Version": 18,
-	"VersionName": "0.4.0",
+	"Version": 19,
+	"VersionName": "0.4.1",
 	"FriendlyName": "Easy Multi Save Addons",
 	"Description": "Extension amd integrations for the Easy Multi Save plugin.",
 	"Category": "Michael Hegemann",

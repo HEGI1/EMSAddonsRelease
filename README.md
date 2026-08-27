@@ -1,6 +1,6 @@
 # Easy Multi Save Addons
 
-**Current Version: 0.4.0**
+**Current Version: 0.4.1**
 
 **Easy Multi Save Addons** provide ready-made extensions for more specialized Unreal Engine workflows that would otherwise require project-specific Blueprint logic. They build directly on Easy Multi Save, reusing its save system while keeping the core plugin lean and focused.
 
@@ -14,6 +14,7 @@
 | **Geometry Collection** | Saving fractured Chaos Geometry Collection state. | Use an **EMS Geometry Collection Actor**. |
 | **Level Sequence** | Saving Level Sequence playback state. | Use an **EMS Level Sequence Actor**. |
 | **Instance Manager** | Runtime changes to project-owned ISM and HISM instances and to painted Static Mesh Foliage. | Place one **EMS Instance Manager** in the persistent level. |
+| **Physics Streaming Guard** | Keeping a simulating actor from falling out of the world while the geometry under it is streamed out. | Add an **EMS Physics Streaming Guard** component. **EMS Geometry Collection Actor** already has one. |
 
 Save and load normally through EMS after setup.
 
@@ -38,7 +39,7 @@ Save and load normally through EMS after setup.
 See the [Changelog](Plugins/EmsAddons/CHANGELOG.md) for release notes and recent changes.
 
 ## Requirements
-- EMSAddons 0.4.0
+- EMSAddons 0.4.1
 - Unreal Engine 5.8
 - Easy Multi Save 1.85 or compatible newer release
 - Unreal `GeometryCollectionPlugin`
