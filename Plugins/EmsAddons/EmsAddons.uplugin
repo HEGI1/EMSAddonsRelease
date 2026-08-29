@@ -1,7 +1,7 @@
 {
 	"FileVersion": 3,
-	"Version": 25,
-	"VersionName": "0.5.3",
+	"Version": 26,
+	"VersionName": "0.5.4",
 	"FriendlyName": "Easy Multi Save Addons",
 	"Description": "Extension and integrations for the Easy Multi Save plugin.",
 	"Category": "Michael Hegemann",
