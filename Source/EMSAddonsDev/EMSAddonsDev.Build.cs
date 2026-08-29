@@ -1,4 +1,4 @@
-// Fill out your copyright notice in the Description page of Project Settings.
+//Easy Multi Save Addons - Copyright (C) 2026 by Michael Hegemann.
 
 using UnrealBuildTool;
 

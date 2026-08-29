@@ -1,3 +1,5 @@
+//Easy Multi Save Addons - Copyright (C) 2026 by Michael Hegemann.
+
 using UnrealBuildTool;
 
 public class EMSAddonsPhysics : ModuleRules
