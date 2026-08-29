@@ -1,6 +1,6 @@
 # Easy Multi Save Addons
 
-**Current Version: 0.5.1**
+**Current Version: 0.5.2**
 
 **Easy Multi Save Addons** provide ready-made extensions for more specialized Unreal Engine workflows that would otherwise require project-specific Blueprint logic. They build directly on Easy Multi Save, reusing its save system while keeping the core plugin lean and focused.
 
@@ -39,7 +39,7 @@ Save and load normally through EMS after setup.
 See the [Changelog](Plugins/EmsAddons/CHANGELOG.md) for release notes and recent changes.
 
 ## Requirements
-- EMSAddons 0.5.1
+- EMSAddons 0.5.2
 - Unreal Engine 5.8
 - Easy Multi Save 1.85 or compatible newer release
 - Unreal `GeometryCollectionPlugin`
@@ -63,4 +63,6 @@ For development from this repository, copy your licensed EMS installation to `Pl
 
 EMSAddons is source-available under the [EMSAddons License](Plugins/EmsAddons/LICENSE). Use requires authorization under a valid Easy Multi Save license, and EMS must remain a required dependency. Compiled EMSAddons code may be shipped as part of packaged games and applications. Standalone use or redistribution as a standalone product is not permitted.
 
-Easy Multi Save, Unreal Engine, and template content remain subject to their own licenses. Versions of EMSAddons previously distributed under MIT remain under the MIT License for those versions.
+Use of EMSAddons requires a valid Easy Multi Save license, including licenses obtained through Fab or the legacy Unreal Engine Marketplace, and successful verification of the applicable license entitlement through the official Easy Multi Save support Discord or another verification method designated by the copyright holder.
+
+Easy Multi Save, Unreal Engine, and template content remain subject to their own licenses.

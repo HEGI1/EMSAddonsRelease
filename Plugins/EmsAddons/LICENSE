@@ -1,5 +1,5 @@
 EMSAddons License
-Version 1.0 — 5 August 2026
+Version 1.1 — 30 August 2026
 
 Copyright (c) 2026 Michael Hegemann. All rights reserved.
 
@@ -20,11 +20,20 @@ person or entity authorized to use Easy Multi Save under a valid license to:
 - distribute compiled EMSAddons code only as an inseparable part of a packaged
   game or application created with Easy Multi Save.
 
+Use of EMSAddons additionally requires successful verification of the applicable
+Easy Multi Save license entitlement through the official Easy Multi Save support
+Discord or another verification method designated by the copyright holder.
+This verification requirement is solely a condition of the EMSAddons license and
+does not alter the terms or validity of the underlying Easy Multi Save license
+or entitlement.
+
 2. Restrictions
 
 You may not:
 
 - use EMSAddons without authorization to use Easy Multi Save;
+- use EMSAddons without successful verification of the applicable Easy Multi Save
+  license entitlement as described above;
 - use EMSAddons as a standalone system or without Easy Multi Save as its
   required dependency;
 - sell, sublicense, or redistribute EMSAddons as a standalone product;
@@ -54,6 +63,7 @@ LIABILITY ARISING FROM THE SOFTWARE OR ITS USE.
 
 6. Previously Licensed Versions
 
-This license applies only to versions of EMSAddons first distributed with this
-license. Copies and versions previously distributed under the MIT License remain
-licensed under the MIT License according to its terms.
+This license applies only to copies and versions of EMSAddons first distributed
+with this license. Copies and versions previously distributed under the MIT
+License or an earlier EMSAddons License remain licensed under the applicable
+terms under which they were distributed.
