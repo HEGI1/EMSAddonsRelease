@@ -63,4 +63,4 @@ For development from this repository, copy your licensed EMS installation to `Pl
 
 EMSAddons is source-available under the [EMSAddons License](Plugins/EmsAddons/LICENSE). Use requires authorization under a valid Easy Multi Save license, and EMS must remain a required dependency. Compiled EMSAddons code may be shipped as part of packaged games and applications. Standalone use or redistribution as a standalone product is not permitted.
 
-Easy Multi Save, Unreal Engine, and template content remain subject to their own licenses. Versions of EMSAddons previously distributed under MIT remain under the MIT License for those versions.
+Easy Multi Save, Unreal Engine, and template content remain subject to their own licenses.
