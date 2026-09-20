@@ -1,6 +1,6 @@
 # Easy Multi Save Addons
 
-**Current Version: 0.5.4**
+**Current Version: 0.5.9**
 
 **Easy Multi Save Addons** provide ready-made extensions for more specialized Unreal Engine workflows that would otherwise require project-specific Blueprint logic. They build directly on Easy Multi Save, reusing its save system while keeping the core plugin lean and focused.
 
@@ -39,7 +39,7 @@ Save and load normally through EMS after setup.
 See the [Changelog](Plugins/EmsAddons/CHANGELOG.md) for release notes and recent changes.
 
 ## Requirements
-- EMSAddons 0.5.4
+- EMSAddons 0.5.9
 - Unreal Engine 5.8
 - Easy Multi Save 1.85 or compatible newer release
 - Unreal `GeometryCollectionPlugin`
@@ -48,16 +48,16 @@ Easy Multi Save is a separate dependency and is not included.
 
 ## Installation
 
-Copy both plugins into the project:
+Copy both plugin folders into your project's `Plugins` directory:
 
 ```text
-<Project>/Plugins/EasyMultiSave/EasyMultiSave.uplugin
-<Project>/Plugins/EmsAddons/EmsAddons.uplugin
+<Project>/Plugins/EasyMultiSave/
+<Project>/Plugins/EmsAddons/
 ```
 
-Enable the plugins, regenerate project files if required, and build the project.
+Enable **Easy Multi Save** and **EMSAddons** in the Unreal Engine plugin settings if they are not already enabled, then restart the editor if requested.
 
-For development from this repository, copy your licensed EMS installation to `Plugins/EasyMultiSave`, generate project files for `EMSAddonsDev.uproject`, and build the editor target. The repository uses Git LFS for binary assets.
+For development from this repository, copy your licensed EMS installation to `Plugins/EasyMultiSave/` and open `EMSAddonsDev.uproject`. Unreal will normally offer to build or rebuild the required modules automatically. If needed, regenerate the project files and build the editor target manually.
 
 ## License
 

@@ -147,6 +147,7 @@ private:
 	int32 RuntimeCompletedLoops = 0;
 	bool bRuntimeHasStarted = false;
 	bool bRuntimeFinished = false;
+	bool bRuntimePlaybackActive = false;
 	bool bAuthoredAutoPlay = false;
 	bool bAutoPlaySuppressed = false;
 	bool bInitialAutoPlayDecisionPending = false;
@@ -155,7 +156,6 @@ private:
 	bool bLevelLoadCompletionReceived = false;
 	bool bRestoreClockStarted = false;
 	bool bApplyingRestore = false;
-	bool bStartingTrackedLoopPlayback = false;
 	bool bIsEndingPlay = false;
 
 	/**

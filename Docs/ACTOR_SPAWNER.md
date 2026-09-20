@@ -29,6 +29,7 @@ The spawner never creates gameplay actors automatically.
 ## Important behavior
 
 - Spawned actors use normal EMS actor binary data and do not need the EMS save interface.
+- **Spawn Actor** returns no actor or ID while the spawner is capturing a save. Retry after saving completes; spawning from a child's save callback would otherwise create an incomplete saved record.
 - A restored actor runs **Actor Pre Load** before its Construction Script and Begin Play, and **Actor Loaded** after its saved state is applied. An actor whose state fails to load is discarded rather than left half-restored; its record is kept for the next restore.
 - The placed spawner defines level ownership. Under World Partition it is spatially loaded by default.
 - **Max Spawned Actors** limits new records and records processed during restore.

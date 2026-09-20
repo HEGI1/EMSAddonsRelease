@@ -29,8 +29,10 @@ namespace EMSAddonsWorldPartition
 	/**
 	 * Describes the supported generated cells covering a location.
 	 *
-	 * CellToIgnore is left out of the result, which is what lets a caller ask whether a
-	 * location would still be covered once a particular cell finishes hiding.
+	 * CellToIgnore still contributes geometric coverage but is excluded from the
+	 * visible-cell result. This lets a hiding-cell callback ask whether another
+	 * visible cell will keep the location live without losing the fact that the
+	 * departing cell was the location's final supported coverage.
 	 */
 	FEMSWorldPartitionCellCoverage QueryCellCoverage(
 		const UWorld* World,

@@ -115,6 +115,15 @@ public:
 	UFUNCTION(BlueprintPure, Category = "EMS Addons|Autosave and Checkpoints|Autosave", meta = (DisplayName = "Is Autosave Active"))
 	bool IsAutosaveActive() const { return bSaveActive; }
 
+	/** Internal C++ reservation used by the pre-load-map synchronous save path. */
+	bool BeginSynchronousAutosave(FName Reason, const FString& SaveSlot);
+
+	/** Completes a synchronous save reservation and emits the normal addon and EMS callbacks. */
+	void CompleteSynchronousAutosave(bool bSuccess, int32 SaveDataFlags);
+
+	/** Aborts a synchronous save reservation before any EMS files are written. */
+	void AbortSynchronousAutosave();
+
 	/** C++ helper used by checkpoint actors while checkpoint state is being restored. */
 	bool IsCheckpointLoadInProgress() const
 	{

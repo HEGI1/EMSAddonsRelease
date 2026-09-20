@@ -71,6 +71,10 @@ void EMSAutosaveMapTravel::HandlePreLoadMap(const FWorldContext& WorldContext, c
 		return;
 	}
 
+	// The synchronous operation must use one coherent configuration even if a
+	// user callback mutates project settings while OnAutosaveStarted is running.
+	const int32 SaveDataFlags = Settings->SaveDataFlags;
+
 	if (Autosave->IsCheckpointLoadInProgress())
 	{
 		LogSkip(MapName, TEXT("a checkpoint load is travelling to its restore map."));
@@ -97,7 +101,7 @@ void EMSAutosaveMapTravel::HandlePreLoadMap(const FWorldContext& WorldContext, c
 		return;
 	}
 
-	if (Settings->SaveDataFlags <= 0)
+	if (SaveDataFlags <= 0)
 	{
 		LogSkip(MapName, TEXT("no EMS save data groups are enabled."));
 		return;
@@ -109,30 +113,57 @@ void EMSAutosaveMapTravel::HandlePreLoadMap(const FWorldContext& WorldContext, c
 		return;
 	}
 
-	if (IsStreamingSaveBlocked(EMS, Settings->SaveDataFlags))
+	if (IsStreamingSaveBlocked(EMS, SaveDataFlags))
 	{
 		LogSkip(MapName, TEXT("level streaming is not ready for a complete save."));
 		return;
 	}
 
-	Autosave->OnAutosaveStarted.Broadcast(MapLeaveAutosaveReason);
+	if (!Autosave->BeginSynchronousAutosave(MapLeaveAutosaveReason, SaveSlot))
+	{
+		LogSkip(MapName, TEXT("the autosave subsystem could not reserve the map-leave save."));
+		return;
+	}
+
+	// OnAutosaveStarted is user code. It may request another autosave, change the
+	// save slot, add a blocker, start a direct EMS operation, or initiate travel.
+	// Revalidate every assumption that must still hold before writing anything.
+	const bool bStillValid =
+		IsValid(World)
+		&& World->IsGameWorld()
+		&& !World->bIsTearingDown
+		&& World->GetGameInstance() == GameInstance
+		&& EMSAddons::HasPersistenceAuthority(World->GetNetMode())
+		&& IsValid(EMS)
+		&& !FAsyncSaveHelpers::ShouldCancelSaveTask(EMS)
+		&& Autosave->IsAutosaveActive()
+		&& !Autosave->IsAutosaveBlocked()
+		&& EMS->GetCurrentSaveGameName().Equals(SaveSlot, ESearchCase::IgnoreCase)
+		&& !EMS->IsAsyncTaskActive(false)
+		&& !IsStreamingSaveBlocked(EMS, SaveDataFlags);
+	if (!bStillValid)
+	{
+		Autosave->AbortSynchronousAutosave();
+		LogSkip(MapName, TEXT("an autosave start callback invalidated the outgoing save operation."));
+		return;
+	}
 
 	// Mirror UEMSAsyncSaveGame's normal save path, but finish it synchronously
 	// before LoadMap can begin tearing down the outgoing world.
 	EMS->SaveSlotInfoObject(SaveSlot, true);
 	EMS->PrepareLoadAndSaveActors(
-		Settings->SaveDataFlags,
+		SaveDataFlags,
 		EAsyncCheckType::CT_Save,
 		EPrepareType::PT_Default);
 
 	bool bSuccess = true;
 
-	if (EMSFLAG::IsPlayer(Settings->SaveDataFlags))
+	if (EMSFLAG::IsPlayer(SaveDataFlags))
 	{
 		bSuccess &= EMS->SavePlayerActors(EMS->GetPlayerController(), EMS->PlayerSaveFile());
 	}
 
-	if (EMSFLAG::IsLevel(Settings->SaveDataFlags))
+	if (EMSFLAG::IsLevel(SaveDataFlags))
 	{
 		const FLevelSnapshot Snapshot = EMS->CaptureActorSnapshot(false);
 		const bool bLevelSaved = EMS->SaveLevelActors(false, Snapshot);
@@ -143,29 +174,27 @@ void EMSAutosaveMapTravel::HandlePreLoadMap(const FWorldContext& WorldContext, c
 		bSuccess &= bLevelSaved;
 	}
 
+	const FName SavedLevelName = EMS->GetLevelName();
+	// Completion keeps the synchronous reservation through both the addon event
+	// and EMS OnActorsSaved broadcast, so neither callback surface can start a
+	// fresh async addon save immediately before LoadMap tears this world down.
+	Autosave->CompleteSynchronousAutosave(bSuccess, SaveDataFlags);
+
 	if (bSuccess)
 	{
-		Autosave->OnAutosaveCompleted.Broadcast(MapLeaveAutosaveReason);
 		UE_LOG(
 			LogEMSAddonsAutosave,
 			Log,
 			TEXT("Autosave When Leaving Map saved %s before travelling to %s."),
-			*EMS->GetLevelName().ToString(),
+			*SavedLevelName.ToString(),
 			*MapName);
 	}
 	else
 	{
-		Autosave->OnAutosaveFailed.Broadcast(MapLeaveAutosaveReason);
 		UE_LOG(
 			LogEMSAddonsAutosave,
 			Warning,
 			TEXT("Autosave When Leaving Map failed before travelling to %s."),
 			*MapName);
 	}
-
-	// Keep checkpoint supersession, minimum-interval tracking and external EMS
-	// listeners identical to a normal Save Game Actors operation.
-	EMS->BroadcastOnActorsSaved(
-		FAsyncSaveHelpers::GetMode(Settings->SaveDataFlags),
-		bSuccess);
 }

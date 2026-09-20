@@ -16,6 +16,7 @@ bool AEMSInstanceManager::ReplaceInstanceWithSettings(
 
 	UStaticMesh* ReplacementMesh = Replacement.Mesh.Get();
 	if (!ReplacementMesh
+		|| !Replacement.TransformOffset.IsValid()
 		|| !CanMutateInstanceState()
 		|| !IsValid(Component)
 		|| !Component->GetStaticMesh()
@@ -64,6 +65,10 @@ bool AEMSInstanceManager::ReplaceInstanceWithSettings(
 	// space, matching the Blueprint Compose Transforms convention.
 	ReplacementWorldTransform =
 		Replacement.TransformOffset * ReplacementWorldTransform;
+	if (!ReplacementWorldTransform.IsValid())
+	{
+		return false;
+	}
 
 	TArray<float> CustomData;
 	ReadInstanceCustomData(Component, InstanceIndex, CustomData);

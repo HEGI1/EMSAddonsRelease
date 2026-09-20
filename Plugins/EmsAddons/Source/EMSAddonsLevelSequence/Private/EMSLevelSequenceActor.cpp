@@ -8,6 +8,7 @@
 #include "EMSAddonsLevelSequence.h"
 #include "EMSMisc.h"
 #include "EMSObject.h"
+#include "EMSTypes.h"
 #include "Engine/Texture2D.h"
 #include "Engine/World.h"
 #include "LevelSequence.h"
@@ -62,6 +63,7 @@ void AEMSLevelSequenceActor::BeginPlay()
 	bIsEndingPlay = false;
 	bRuntimeHasStarted = false;
 	bRuntimeFinished = false;
+	bRuntimePlaybackActive = false;
 	RuntimeRequestedLoopCount = PlaybackSettings.LoopCount.Value;
 	RuntimeCompletedLoops = 0;
 
@@ -144,9 +146,10 @@ void AEMSLevelSequenceActor::PlayLooping(const int32 NumLoops)
 
 	RuntimeRequestedLoopCount = FMath::Max(-1, NumLoops);
 	RuntimeCompletedLoops = 0;
-	bStartingTrackedLoopPlayback = true;
+	// Play/Pause delegates can be deferred by sequence evaluation. Keep the run
+	// active until Stop/Finished instead of relying on a timely pause callback.
+	bRuntimePlaybackActive = true;
 	Player->PlayLooping(RuntimeRequestedLoopCount);
-	bStartingTrackedLoopPlayback = false;
 }
 
 bool AEMSLevelSequenceActor::CanAccessLevelSequence(
@@ -203,6 +206,13 @@ bool AEMSLevelSequenceActor::CanAccessLevelSequence(
 
 bool AEMSLevelSequenceActor::CaptureLevelSequenceState()
 {
+	// EMS can finish its load before delayed bindings become available. Until
+	// restoration finishes, the live player is not the state we intend to save.
+	if (bRestoreRequested || IsLevelSequenceRestorePending() || bApplyingRestore)
+	{
+		return false;
+	}
+
 	FText Reason;
 	if (!CanAccessLevelSequence(Reason, true))
 	{
@@ -264,6 +274,7 @@ bool AEMSLevelSequenceActor::CaptureLevelSequenceState()
 		bRuntimeHasStarted
 		|| CapturedState.PlaybackStatus
 			!= EEMSLevelSequencePlaybackStatus::Stopped;
+	bRuntimePlaybackActive = Player->IsPlaying() || Player->IsPaused();
 
 	PersistedState = MoveTemp(CapturedState);
 	LastRestoreResult = FEMSAddonResult::Success();
@@ -566,6 +577,7 @@ bool AEMSLevelSequenceActor::ApplyPersistedState(FText& OutReason)
 	}
 
 	bRuntimeHasStarted = PersistedState.bHasStarted;
+	bRuntimePlaybackActive = Player->IsPlaying() || Player->IsPaused();
 	RuntimeRequestedLoopCount = RequestedLoopCount;
 	RuntimeCompletedLoops = PersistedState.CompletedLoops;
 	bApplyingRestore = false;
@@ -656,8 +668,18 @@ void AEMSLevelSequenceActor::AttemptRestore()
 
 	if (!bLevelLoadCompletionReceived)
 	{
-		ScheduleRestoreRetry();
-		return;
+		// Managed children are restored directly from binary and never appear in
+		// EMS's loaded-actor list. Wait until its load is idle instead; the retry
+		// tick also lets the owning manager finish its synchronous restore pass.
+		if (ActorHasTag(EMS::SkipSaveTag) && !IsRelevantEMSLoadActive())
+		{
+			bLevelLoadCompletionReceived = true;
+		}
+		else
+		{
+			ScheduleRestoreRetry();
+			return;
+		}
 	}
 
 	FText Reason;
@@ -1155,7 +1177,7 @@ void AEMSLevelSequenceActor::HandleSequencePlayed()
 {
 	if (!bApplyingRestore)
 	{
-		if (!bStartingTrackedLoopPlayback)
+		if (!bRuntimePlaybackActive)
 		{
 			RuntimeRequestedLoopCount = PlaybackSettings.LoopCount.Value;
 			RuntimeCompletedLoops = 0;
@@ -1163,6 +1185,7 @@ void AEMSLevelSequenceActor::HandleSequencePlayed()
 
 		bRuntimeHasStarted = true;
 		bRuntimeFinished = false;
+		bRuntimePlaybackActive = true;
 	}
 }
 
@@ -1176,6 +1199,7 @@ void AEMSLevelSequenceActor::HandleSequencePaused()
 	if (!bApplyingRestore)
 	{
 		bRuntimeHasStarted = true;
+		bRuntimePlaybackActive = true;
 	}
 }
 
@@ -1184,6 +1208,7 @@ void AEMSLevelSequenceActor::HandleSequenceStopped()
 	if (!bApplyingRestore)
 	{
 		bRuntimeFinished = false;
+		bRuntimePlaybackActive = false;
 	}
 }
 
@@ -1193,6 +1218,7 @@ void AEMSLevelSequenceActor::HandleSequenceFinished()
 	{
 		bRuntimeHasStarted = true;
 		bRuntimeFinished = true;
+		bRuntimePlaybackActive = false;
 	}
 }
 

@@ -220,34 +220,34 @@ bool UEMSAutosaveSubsystem::EnqueueRequest(
 	const FEMSCheckpointRecord* CheckpointRecord,
 	AEMSCheckpoint* CheckpointActor)
 {
-	if (SaveSlot.IsEmpty())
+	if (SaveSlot.IsEmpty() || (CheckpointRecord && !IsValid(CheckpointActor)))
 	{
 		return false;
 	}
 
-	if (PendingRequest.IsPending() && !PendingRequest.IsForSlot(SaveSlot))
+	FName CanceledReason;
+	if (PendingRequest.IsPending()
+		&& (!PendingRequest.IsForSlot(SaveSlot)
+			|| (CheckpointRecord && PendingRequest.IsCheckpoint()
+				&& PendingCheckpointActor.Get() != CheckpointActor)))
 	{
-		CancelPendingRequest(TEXT("Pending autosave canceled because the active EMS save slot changed."), true);
+		CanceledReason = PendingRequest.GetReason();
+		CancelPendingRequest(TEXT("Pending autosave was superseded by a new request."), false);
 	}
 
 	if (CheckpointRecord)
 	{
-		if (!IsValid(CheckpointActor))
-		{
-			return false;
-		}
-		if (PendingRequest.IsCheckpoint()
-			&& PendingCheckpointActor.IsValid()
-			&& PendingCheckpointActor.Get() != CheckpointActor)
-		{
-			PendingCheckpointActor->MarkActivationFailed();
-			OnAutosaveFailed.Broadcast(PendingRequest.GetReason());
-		}
 		PendingCheckpointActor = CheckpointActor;
 		CheckpointActor->MarkActivationPending();
 	}
 
 	PendingRequest.Enqueue(Reason, SaveSlot, CheckpointRecord);
+	// Publish the replacement before user code can retry the canceled checkpoint.
+	// A nested request may supersede this one, but nothing overwrites it afterward.
+	if (!CanceledReason.IsNone())
+	{
+		OnAutosaveFailed.Broadcast(CanceledReason);
+	}
 	return true;
 }
 
@@ -422,10 +422,50 @@ void UEMSAutosaveSubsystem::StartSave(
 	ActiveCheckpoint = CheckpointRecord ? *CheckpointRecord : FEMSCheckpointRecord();
 	ActiveCheckpointGeneration = ReservedGeneration;
 	ActiveCheckpointActor = CheckpointActor;
-	ActiveSaveTask->OnCompleted.AddUniqueDynamic(this, &UEMSAutosaveSubsystem::HandleSaveCompleted);
-	ActiveSaveTask->OnFailed.AddUniqueDynamic(this, &UEMSAutosaveSubsystem::HandleSaveFailed);
+
+	UEMSAsyncSaveGame* const SaveTask = ActiveSaveTask;
+	SaveTask->OnCompleted.AddUniqueDynamic(this, &UEMSAutosaveSubsystem::HandleSaveCompleted);
+	SaveTask->OnFailed.AddUniqueDynamic(this, &UEMSAutosaveSubsystem::HandleSaveFailed);
 	OnAutosaveStarted.Broadcast(ActiveReason);
-	ActiveSaveTask->Activate();
+
+	// User callbacks are arbitrary code. World cleanup can reset ActiveSaveTask,
+	// and callbacks can also switch save slots, install a blocker, or start an EMS
+	// operation before the unactivated task begins. Never activate stale work.
+	if (!bSaveActive || ActiveSaveTask != SaveTask)
+	{
+		return;
+	}
+
+	UWorld* World = GetWorld();
+	EMS = UEMSObject::Get(this);
+	if (bIsShuttingDown
+		|| !World
+		|| !World->IsGameWorld()
+		|| World->bIsTearingDown
+		|| !EMSAddons::HasPersistenceAuthority(World->GetNetMode())
+		|| !EMS
+		|| !EMS->GetCurrentSaveGameName().Equals(SaveSlot, ESearchCase::IgnoreCase)
+		|| EMS->IsAsyncTaskActive(false)
+		|| IsCheckpointLoadInProgress()
+		|| IsAutosaveBlocked())
+	{
+		const TWeakObjectPtr<AEMSCheckpoint> AbortedActor = ActiveCheckpointActor;
+		ResetActiveSaveState();
+		if (ReservedGeneration.IsValid())
+		{
+			// The EMS task never activated, so rolling back this reservation is safe.
+			RollbackCheckpointGeneration(SaveSlot);
+		}
+		if (AbortedActor.IsValid())
+		{
+			AbortedActor->MarkActivationFailed();
+		}
+		LogMessage(TEXT("Autosave was canceled because its start callback invalidated the save slot, world, authority, blocker, or EMS task state."), true);
+		OnAutosaveFailed.Broadcast(Reason);
+		return;
+	}
+
+	SaveTask->Activate();
 }
 
 void UEMSAutosaveSubsystem::ResetActiveSaveState()
@@ -780,6 +820,7 @@ bool UEMSAutosaveSubsystem::LoadLastCheckpoint()
 {
 	UWorld* World = GetWorld();
 	if (bIsShuttingDown
+		|| bSaveActive
 		|| !World
 		|| !EMSAddons::HasPersistenceAuthority(World->GetNetMode())
 		|| ActiveLoadTask

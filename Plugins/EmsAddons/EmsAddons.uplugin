@@ -1,7 +1,7 @@
 {
 	"FileVersion": 3,
-	"Version": 26,
-	"VersionName": "0.5.4",
+	"Version": 27,
+	"VersionName": "0.5.9",
 	"FriendlyName": "Easy Multi Save Addons",
 	"Description": "Extension and integrations for the Easy Multi Save plugin.",
 	"Category": "Michael Hegemann",
@@ -9,7 +9,7 @@
 	"CreatedByURL": "https://twitter.com/HegiDev",
 	"EngineVersion": "5.8.0",
 	"CanContainContent": false,
-	"IsBetaVersion": true,
+	"IsBetaVersion": false,
 	"Installed": false,
 	"EnabledByDefault": false,
 	"Modules": [

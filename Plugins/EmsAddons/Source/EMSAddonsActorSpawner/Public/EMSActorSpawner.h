@@ -98,6 +98,7 @@ public:
 	UPROPERTY(BlueprintAssignable, Category = "EMS Addons|Actor Spawner|Events")
 	FEMSSpawnedActorEvent OnActorRemoved;
 
+	/** Returns null during save capture; retry the spawn after saving completes. */
 	UFUNCTION(
 		BlueprintCallable,
 		Category = "EMS Addons|Actor Spawner",
@@ -185,6 +186,7 @@ private:
 	bool bRestoreHadFailure = false;
 	bool bRestoreHadSkippedRecord = false;
 	bool bIsEndingPlay = false;
+	bool bCapturingState = false;
 	FGuid SpawnerIdentityBeforeLoad;
 
 	bool CanMutateSpawnedActors() const;

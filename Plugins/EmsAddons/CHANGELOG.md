@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.5.9 - 2026-09-20
+
+### Fixed
+
+- **Actor Spawner:** spawning from a child's save callback now returns no actor or ID while capture is running, preventing incomplete child records from being written into the save. Retry the spawn after saving completes.
+- **Level Sequence:** pausing and resuming now preserves the requested runtime loop count and completed-loop progress, including paused playback restored from a save.
+- **Level Sequence:** actors restored through Actor Spawner or World Partition Runtime Actors now finish deferred playback restoration after EMS loading becomes idle, without waiting for an EMS loaded-actor list that excludes managed children.
+- **Autosave and Checkpoints:** replacing a queued checkpoint now updates the queue before firing failure callbacks, so a listener that retries the canceled checkpoint cannot leave it permanently activation-pending without a queued save.
+- **Autosave and Checkpoints:** autosave callbacks can no longer start overlapping addon EMS saves. Normal async saves keep a stable task across the start callback, while map-leave saves keep their synchronous reservation through addon and EMS completion callbacks and revalidate the outgoing save state before writing.
+- **World Partition Runtime Actors:** unloading the last visible generated cell now retains the departing cell as coverage evidence while excluding it from visibility, so the actor becomes dormant immediately instead of normally waiting for the one-second reconciliation fallback.
+- **Instanced Meshes and Foliage:** capture now applies the 500,000-change safety limit to the final merged delta set, including retained streamed-out or skipped sources, and preserves the complete previous saved delta set when the merged limit is exceeded.
+- **Level Sequence:** a save taken while playback restoration is waiting for EMS or bindings now preserves the loaded state instead of capturing the temporarily stopped player.
+- **Instanced Meshes and Foliage:** replacement requests with invalid transform offsets or invalid composed transforms are rejected before creating a replacement or removing the original instance.
+
 ## 0.5.4 - 2026-08-30
 
 ### Improved

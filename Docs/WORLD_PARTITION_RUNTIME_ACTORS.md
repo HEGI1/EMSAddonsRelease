@@ -53,6 +53,7 @@ Use [Actor Spawner](ACTOR_SPAWNER.md) when the actor must explicitly belong to a
 
 - Spawn locations must be covered by a currently visible supported generated cell. This is checked once and not retried: spawning at BeginPlay before streaming has caught up (for example, at the position of an always-loaded actor whose cell has not streamed in yet) fails the spawn.
 - If a managed actor temporarily cannot resolve a supported cell, it stays alive and is retried.
+- When a generated cell begins hiding, that departing cell still counts as geometric coverage for the transition check but is excluded from the visible-cell result. This lets the last-covering-cell case become dormant immediately while an overlapping visible cell keeps the actor live. The one-second reconciliation remains a safety net for missed or out-of-order streaming notifications and for actors that move outside loaded coverage between events; it is no longer the normal fallback for the last-cell unload case.
 - Spawning is rejected while a save or load is in progress, including the initial World Partition load. Gate spawns on **Is Saving Or Loading**, or wait for the EMS load to complete — an actor spawned into that window would be destroyed by the load that follows.
 - Loading replaces the managed runtime actors with the ones the save holds. Managed actors spawned since that save was written are destroyed and do not return.
 - The managed actor lives in the persistent level while active; EMSAddons supplies the World Partition streaming lifetime.

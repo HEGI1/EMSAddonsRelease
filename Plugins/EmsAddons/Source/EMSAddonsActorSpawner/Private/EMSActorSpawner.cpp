@@ -336,7 +336,7 @@ AActor* AEMSActorSpawner::SpawnActor(
 	FEMSSpawnedActorId& OutActorId)
 {
 	OutActorId = FEMSSpawnedActorId();
-	if (!CanMutateSpawnedActors() || !ActorClass || !WorldTransform.IsValid())
+	if (!CanMutateSpawnedActors() || bCapturingState || !ActorClass || !WorldTransform.IsValid())
 	{
 		return nullptr;
 	}
@@ -1063,10 +1063,13 @@ void AEMSActorSpawner::ActorPreSave_Implementation()
 void AEMSActorSpawner::CaptureSpawnerStateOnGameThread()
 {
 	check(IsInGameThread());
-	if (!CanMutateSpawnedActors())
+	if (!CanMutateSpawnedActors() || bCapturingState)
 	{
 		return;
 	}
+	// Child save callbacks may reenter the spawner. New actors cannot join this
+	// snapshot without a binary, and recursively capturing them is unbounded.
+	TGuardValue<bool> CaptureGuard(bCapturingState, true);
 	EnsureSpawnerIdentity();
 	CaptureLiveActorsForSave();
 }

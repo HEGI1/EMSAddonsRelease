@@ -22,7 +22,7 @@ Checkpoint loading can travel to another map. In streamed levels and World Parti
 ### Checkpoint options
 
 - **Activate On Player Overlap** — activates when the player enters the Trigger.
-- **Trigger Once** — allows one activation per play session. Disable for repeatable checkpoints. **Activate Checkpoint** returns false when the committed checkpoint already matches, so a checkpoint rebuilt by a respawn or a streamed-level reload does not report a second activation.
+- **Trigger Once** — allows one activation until reset. The activation flag participates in normal EMS saves and loads. Disable for repeatable checkpoints. **Activate Checkpoint** returns false when the committed checkpoint already matches, so a checkpoint rebuilt by a respawn or a streamed-level reload does not report a second activation.
 - **Display Name** — optional saved checkpoint name.
 
 Use **Reset Checkpoint** to clear the checkpoint actor's session activation state.
@@ -92,6 +92,10 @@ Saving can continue after the final blocker is removed.
 The subsystem exposes **On Autosave Started**, **On Autosave Completed**, **On Autosave Failed**, **On Checkpoint Activated**, **On Checkpoint Committed**, **On Checkpoint Loaded**, and **On Checkpoint Load Failed**.
 
 The checkpoint actor also exposes **On Checkpoint Activated**.
+
+**On Autosave Started** is guarded against save re-entry. A normal asynchronous save owns its EMS task before the event is exposed, and the synchronous map-leave path reserves the subsystem state before broadcasting and revalidates the world, save slot, blocker state, streaming state, and EMS task state afterward. A save requested from the callback cannot start concurrently with the save that raised it.
+
+Callbacks may still deliberately change control flow. Switching save slots, adding a blocker, tearing down the world, or starting travel from **On Autosave Started** can cancel the not-yet-activated operation instead of letting it continue against stale assumptions. Event handlers are therefore best kept observational unless that cancellation is intentional.
 
 ## Important behavior
 

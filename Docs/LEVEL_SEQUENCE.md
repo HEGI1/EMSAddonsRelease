@@ -23,8 +23,9 @@ The actor can live in streamed levels and World Partition cells like other place
 
 - **Is EMS Addon Restore Complete** — checks whether deferred restoration has finished.
 - **Get EMS Addon Restore Result** — returns the latest restore result.
+- **Play Looping** — call this on the EMS Level Sequence Actor to preserve the requested loop count. Use `-1` for infinite playback, `0` for a single play, or a positive number for that many repeats.
 
-Use the EMS Level Sequence Actor as the target. Normal playback still uses Unreal's Level Sequence nodes.
+Use the EMS Level Sequence Actor as the restore-status target. Normal playback still uses Unreal's Level Sequence nodes; use the actor's **Play Looping** wrapper when changing the loop count at runtime.
 
 ## Events
 
@@ -35,5 +36,8 @@ Use the EMS Level Sequence Actor as the target. Normal playback still uses Unrea
 
 - Authored autoplay is held while EMS restoration is pending so it cannot race the saved state.
 - Restore waits for root possessable bindings up to **Restore Timeout**.
+- Saving while restoration is requested or pending preserves the loaded playback state until the player has been restored.
+- Pausing and resuming preserves the runtime loop count and completed-loop progress, including after loading a paused sequence.
+- Actors restored through Actor Spawner or World Partition Runtime Actors wait for EMS loading to finish without requiring membership in its loaded-actor event list.
 - Authored autoplay survives streamed hide/show cycles.
 - Capture and restore are server-authoritative. Replication remains the project's responsibility.

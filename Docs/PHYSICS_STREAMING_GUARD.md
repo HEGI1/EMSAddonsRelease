@@ -43,8 +43,8 @@ Collection needs no setup.
   actor hidden while suspended gets it back at **End Play** too.
 - Simulation itself is never switched off. On a Geometry Collection that would
   recreate the component's physics state and drop the Chaos proxy that Geometry
-  Collection restore depends on. With no gravity and no velocity left, a body
-  holds position anyway.
+  Collection restore depends on. Later impulses, forces, or moving-body contacts
+  can still move a suspended body; the guard does not lock its transform.
 - This is a gameplay safeguard, not persistence. It runs in every net mode, it is
   not server-authoritative, and it never reads or writes save data.
 - It reacts to streaming events rather than polling, so an idle guard costs

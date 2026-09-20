@@ -59,10 +59,6 @@ EMSAddonsWorldPartition::FEMSWorldPartitionCellCoverage EMSAddonsWorldPartition:
 	{
 		const UWorldPartitionRuntimeLevelStreamingCell* Cell =
 			Cast<UWorldPartitionRuntimeLevelStreamingCell>(QueryCell);
-		if (Cell && Cell == CellToIgnore)
-		{
-			continue;
-		}
 
 		FEMSWorldPartitionCellCandidateRank& Rank = Ranks.AddDefaulted_GetRef();
 		Rank.bLevelStreamingCell = Cell != nullptr;
@@ -90,8 +86,12 @@ EMSAddonsWorldPartition::FEMSWorldPartitionCellCoverage EMSAddonsWorldPartition:
 
 		if (Rank.IsSupported())
 		{
+			// CellToIgnore is normally the cell that has just begun hiding. It still
+			// reports visible during this callback, so exclude it only from the
+			// visibility answer. Its geometry still proves that this location was
+			// covered and lets the caller detect the last-covering-cell transition.
 			Coverage.bCovered = true;
-			if (Cell->IsVisible())
+			if (Cell != CellToIgnore && Cell->IsVisible())
 			{
 				VisibleRanks.Add(Rank);
 				VisibleCells.Add(Cell);

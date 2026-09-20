@@ -734,7 +734,7 @@ bool AEMSInstancedSourceManager::CaptureDeltas(const ULevel* OnlyLevel)
 		}
 	}
 
-	int32 TotalChanges = 0;
+	int64 TotalChanges = 0;
 	for (const TPair<
 		FEMSInstanceSourceId,
 		TWeakObjectPtr<UInstancedStaticMeshComponent>>& Pair : LoadedSources)
@@ -782,12 +782,12 @@ bool AEMSInstancedSourceManager::CaptureDeltas(const ULevel* OnlyLevel)
 		}
 		AttachAndPruneGameplayData(Pair.Key, Current);
 		FEMSInstanceSourceDelta Delta = BuildDelta(Pair.Key, *Baseline, Current);
-		const int32 SourceChanges =
-			Delta.RemovedInstances.Num()
-			+ Delta.AddedInstances.Num()
-			+ Delta.ModifiedCustomData.Num()
-			+ Delta.ModifiedGameplayData.Num();
-		if (TotalChanges > MaxTotalChangedInstances - SourceChanges)
+		const int64 SourceChanges =
+			static_cast<int64>(Delta.RemovedInstances.Num())
+			+ static_cast<int64>(Delta.AddedInstances.Num())
+			+ static_cast<int64>(Delta.ModifiedCustomData.Num())
+			+ static_cast<int64>(Delta.ModifiedGameplayData.Num());
+		if (TotalChanges > static_cast<int64>(MaxTotalChangedInstances) - SourceChanges)
 		{
 			LogSourceIssue(
 				Pair.Key,
@@ -835,6 +835,41 @@ bool AEMSInstancedSourceManager::CaptureDeltas(const ULevel* OnlyLevel)
 					"Capture was refused at the source limit. Every source kept its previous delta."));
 		}
 		return false;
+	}
+
+	// Level-scoped capture starts from the previous save and replaces only the
+	// sources in the departing level. Validate the final merged state, not merely
+	// the sources visited by this pass, or retained streamed-out deltas can make a
+	// save exceed the same limit that restore later enforces.
+	int64 MergedTotalChanges = 0;
+	for (const TPair<FEMSInstanceSourceId, FEMSInstanceSourceDelta>& Pair : MergedDeltas)
+	{
+		const FEMSInstanceSourceDelta& Delta = Pair.Value;
+		const int64 DeltaChanges =
+			static_cast<int64>(Delta.RemovedInstances.Num())
+			+ static_cast<int64>(Delta.AddedInstances.Num())
+			+ static_cast<int64>(Delta.ModifiedCustomData.Num())
+			+ static_cast<int64>(Delta.ModifiedGameplayData.Num());
+		if (MergedTotalChanges > static_cast<int64>(MaxTotalChangedInstances) - DeltaChanges)
+		{
+			UE_LOG(
+				LogEMSAddonsInstances,
+				Warning,
+				TEXT("EMS instanced capture skipped because the merged change count exceeds the safety limit. Manager=%s Changes>%d"),
+				*GetPathName(),
+				MaxTotalChangedInstances);
+			if (bReportResult)
+			{
+				SkippedCaptureSources = SkippedSources + 1;
+				LastCaptureResult = FEMSAddonResult(
+					EEMSAddonResultCode::Skipped,
+					LOCTEXT(
+						"InstancedCaptureMergedChangeLimit",
+						"Capture was refused because the merged saved changes exceed the total safety limit. Every source kept its previous delta."));
+			}
+			return false;
+		}
+		MergedTotalChanges += DeltaChanges;
 	}
 
 	TArray<FEMSInstanceSourceDelta> NewDeltas;

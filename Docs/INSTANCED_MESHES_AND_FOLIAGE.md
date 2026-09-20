@@ -54,6 +54,8 @@ Use the replacement outputs from **Success** for operations that happen after re
 
 With the defaults, replacement behavior is unchanged: the complete original instance transform is preserved. Disable **Preserve Scale** to reset the base scale to `1,1,1` before **Transform Offset** is applied. This is useful when the replacement mesh has different authored dimensions.
 
+Invalid transform offsets or invalid resulting transforms take the **Failed** path before creating a replacement or removing the original. Failure returns no Replacement Component and an invalid Replacement Instance Index.
+
 The manager preserves per-instance custom data and EMS gameplay values automatically, then records the result through the normal sparse instance delta. Gameplay values assigned before replacement are carried across automatically; gameplay values assigned afterward should use the replacement outputs from the **Success** path.
 
 If a compatible target source already exists, it is reused. Otherwise the manager creates a replacement source from the original source settings and remembers how to recreate it for later streaming or load operations.
@@ -89,6 +91,8 @@ Temporary actors remain useful for active behavior such as physics, falling tree
 - Moving an instance changes its persistent identity because transform participates in matching.
 - Exact overlapping duplicates are supported, but should not be treated as individually meaningful after arbitrary external reordering.
 - If a source cannot be captured, its previous saved delta is retained.
+- Capture validates the **final merged** saved delta set against the total-change safety limit, including deltas retained for streamed-out or temporarily skipped sources. If the merged state would exceed the limit, capture is refused and the complete previous `SavedDeltas` set is kept instead of writing a state that restore would later reject.
+- World Partition sources use stable actor-instance GUIDs. World Partition instance saves from before 0.5.4 are incompatible; start a fresh capture for those sources after updating. Conventional streamed-level saves retain their existing identity format.
 - Capture, replacement, and restore are server-authoritative. EMSAddons does not replicate instance changes.
 
 Use [Actor Spawner](ACTOR_SPAWNER.md) only when a runtime actor must also inherit explicit streamed-level or cell ownership.
