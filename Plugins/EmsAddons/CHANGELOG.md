@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.0.0 - 2026-09-20
+
+### Added
+
+- Initial stable 1.0 release.
+
 ## 0.5.9 - 2026-09-20
 
 ### Fixed
