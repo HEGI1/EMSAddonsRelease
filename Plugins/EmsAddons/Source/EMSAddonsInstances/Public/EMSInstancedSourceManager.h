@@ -194,12 +194,40 @@ protected:
 	 * the reported capture result alone.
 	 */
 	bool CaptureDeltas(const ULevel* OnlyLevel = nullptr);
-	void RestoreLoadedSources();
+
+	/**
+	 * Reconciles every loaded source that is not settled yet.
+	 *
+	 * A full pass rediscovers the whole world first. A streaming arrival has
+	 * already discovered just the arriving level and passes false, because a
+	 * whole-world rediscovery per streamed cell is what large worlds cannot afford.
+	 */
+	void RestoreLoadedSources(bool bRediscoverWorld = true);
 	bool ActivateAsWorldManager();
 	void RemoveSourcesInLevel(ULevel* Level);
 
-	virtual void CollectSources()
+	/**
+	 * Registers the sources found in OnlyLevel, or in every level when it is null.
+	 *
+	 * A null level is a full rediscovery, run on a fresh RefreshLoadedSources pass.
+	 * A level-scoped call only adds to what is already registered.
+	 */
+	virtual void CollectSources(const ULevel* OnlyLevel)
 		PURE_VIRTUAL(AEMSInstancedSourceManager::CollectSources, );
+
+	/** Whether a level is assembled enough for its sources to be read. */
+	virtual bool CanDiscoverSourcesInLevel(const ULevel* Level) const
+	{
+		return Level != nullptr;
+	}
+
+	/**
+	 * Registers one source found outside a discovery pass, such as a replacement
+	 * target gameplay just created, and reads its baseline if it has none yet.
+	 */
+	void RegisterDiscoveredSource(
+		const FEMSInstanceSourceId& SourceId,
+		UInstancedStaticMeshComponent* Component);
 
 	/**
 	 * Whether a source's instances are read and written in world space.
@@ -235,6 +263,9 @@ protected:
 		return bIsActiveManager && !bIsEndingPlay && HasInstanceAuthority();
 	}
 
+	/** A pending saved delta must be reconciled before gameplay replaces it. */
+	bool CanMutateSourceState(const FEMSInstanceSourceId& SourceId) const;
+
 	/**
 	 * Whether this is a level-placed source with an identity that survives reload.
 	 *
@@ -245,7 +276,7 @@ protected:
 	 */
 	bool IsStableSourceOwner(const AActor* SourceOwner);
 
-	/** Stable level/cell identity. World Partition cells use the runtime cell GUID. */
+	/** Stable level identity. World Partition uses the persistent world scope, not a runtime cell GUID. */
 	static FName MakeLevelIdentity(ULevel* Level);
 
 	/**
@@ -291,19 +322,16 @@ private:
 	 * to rescan every earlier instance. That made a single Blueprint call on a
 	 * large foliage component walk the whole instance list.
 	 *
-	 * Rebuilt whenever the instance count changes or the queried instance no
-	 * longer canonicalizes to what was cached, and dropped outright on any
-	 * mutation the manager performs.
-	 *
-	 * The one case those checks do not catch is gameplay moving an instance that
-	 * exactly overlapped the queried one, which shifts the queried instance's
-	 * ordinal without changing its own transform. That is already outside the
-	 * documented guarantee: exact duplicates hold no durable individual identity
-	 * across external reordering.
+	 * A fast hash of the complete instance buffer detects external edits,
+	 * including a different instance moving into or out of this one's duplicate
+	 * group. World-space keys also depend on the component transform. The cache
+	 * is dropped outright on mutations the manager performs.
 	 */
 	struct FInstanceKeyCache
 	{
 		int32 InstanceCount = 0;
+		uint64 LayoutHash = 0;
+		FTransform ComponentTransform = FTransform::Identity;
 		TArray<EMSAddons::Instances::FCanonicalTransform> CanonicalByRuntimeIndex;
 		TArray<FEMSInstanceKey> KeysByRuntimeIndex;
 	};
@@ -325,6 +353,17 @@ private:
 	 * A source that leaves the loaded world is dropped by ForgetSource.
 	 */
 	TSet<FEMSInstanceSourceId> RestoredSources;
+
+	/**
+	 * Sources whose saved delta was rejected or failed to reconcile since the
+	 * current load began.
+	 *
+	 * Capture keeps the saved delta of any other unsettled source, because that
+	 * source still shows authored content rather than the state the save holds.
+	 * A rejected delta can never apply, so these are captured instead of letting
+	 * it block the source from persisting anything again.
+	 */
+	TSet<FEMSInstanceSourceId> FailedRestoreSources;
 	TSet<FEMSInstanceSourceId> AmbiguousSources;
 	TMap<FObjectKey, FEMSInstanceSourceId> SourceIdsByComponent;
 	TMap<FEMSInstanceSourceId, TMap<FEMSInstanceKey, FEMSInstanceGameplayData>>
@@ -397,9 +436,44 @@ private:
 		const ULevelStreaming* StreamingLevel,
 		ULevel* Level);
 
-	void QueueStreamingRestore();
+	/**
+	 * Queues a level that became visible for discovery and restore on the next
+	 * tick, or only reschedules the pass when Level is null.
+	 */
+	void QueueStreamingRestore(ULevel* Level);
+
+	/** Discovers the queued levels and restores what they brought in. */
+	void ProcessArrivedLevels();
+
+	/** Reads baselines for registered sources that do not have one yet. */
+	void EnsureSourceBaselines();
 
 	void ForgetSource(const FEMSInstanceSourceId& SourceId);
+
+	/** Levels that became visible since the last streaming pass. */
+	TArray<TWeakObjectPtr<ULevel>> ArrivedLevels;
+
+	/** Ticks spent waiting for an arrived level to finish assembling. */
+	int32 ArrivedLevelWaitTicks = 0;
+
+	/** Whether a full discovery has run, which level-scoped discovery extends. */
+	bool bHasDiscoveredWorld = false;
+
+public:
+#if WITH_DEV_AUTOMATION_TESTS
+	int32 GetBaselineCacheCountForTesting() const { return SourceBaselines.Num(); }
+	int32 GetInstanceKeyCacheCountForTesting() const { return InstanceKeyCaches.Num(); }
+	void QueueLevelArrivedForTesting(ULevel* Level) { QueueStreamingRestore(Level); }
+
+	/** Runs the streaming-arrival pass for Level synchronously. */
+	void SimulateLevelArrivedForTesting(ULevel* Level)
+	{
+		ArrivedLevels.AddUnique(Level);
+		ProcessArrivedLevels();
+	}
+#endif
+
+private:
 
 	/** Applies one reconciliation pass to a component. */
 	bool ApplyInstanceMutations(

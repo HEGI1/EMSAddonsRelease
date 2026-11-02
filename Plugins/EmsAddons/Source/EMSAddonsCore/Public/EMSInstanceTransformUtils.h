@@ -15,9 +15,12 @@ namespace EMSAddons::Instances
 		int32 RotationY = 0;
 		int32 RotationZ = 0;
 		int32 RotationW = 0;
-		int32 ScaleX = 0;
-		int32 ScaleY = 0;
-		int32 ScaleZ = 0;
+		// 64-bit because FTransform::IsValid does not bound scale, and a scale
+		// above about 214,748 no longer fits 32 bits at this quantization. The
+		// hash below already reads every field as 64 bits, so keys are unchanged.
+		int64 ScaleX = 0;
+		int64 ScaleY = 0;
+		int64 ScaleZ = 0;
 
 		bool operator==(const FCanonicalTransform& Other) const
 		{
@@ -61,9 +64,9 @@ namespace EMSAddons::Instances
 		Result.RotationY = FMath::RoundToInt(Rotation.Y * 1000000.0);
 		Result.RotationZ = FMath::RoundToInt(Rotation.Z * 1000000.0);
 		Result.RotationW = FMath::RoundToInt(Rotation.W * 1000000.0);
-		Result.ScaleX = FMath::RoundToInt(Scale.X * 10000.0);
-		Result.ScaleY = FMath::RoundToInt(Scale.Y * 10000.0);
-		Result.ScaleZ = FMath::RoundToInt(Scale.Z * 10000.0);
+		Result.ScaleX = FMath::RoundToInt64(Scale.X * 10000.0);
+		Result.ScaleY = FMath::RoundToInt64(Scale.Y * 10000.0);
+		Result.ScaleZ = FMath::RoundToInt64(Scale.Z * 10000.0);
 		return Result;
 	}
 

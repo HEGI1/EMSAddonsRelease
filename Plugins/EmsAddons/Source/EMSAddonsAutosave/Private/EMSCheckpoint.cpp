@@ -4,6 +4,7 @@
 #include "Components/BillboardComponent.h"
 #include "Components/BoxComponent.h"
 #include "EMSAddonsAutosave.h"
+#include "EMSAddonsEditorIdentity.h"
 #include "EMSAutosaveSubsystem.h"
 #include "EMSCheckpointUtils.h"
 #include "EMSMisc.h"
@@ -12,6 +13,7 @@
 #include "Engine/World.h"
 #include "EngineUtils.h"
 #include "GameFramework/Pawn.h"
+#include "GameFramework/PlayerController.h"
 #include "Kismet/GameplayStatics.h"
 #include "TimerManager.h"
 #include "UObject/ConstructorHelpers.h"
@@ -127,6 +129,7 @@ void AEMSCheckpoint::EndPlay(const EEndPlayReason::Type EndPlayReason)
 	bWaitingForCheckpointLoad = false;
 	bLoadWatchScheduled = false;
 	bArmWatchScheduled = false;
+	bWaitingForPlayerPawn = false;
 
 	Super::EndPlay(EndPlayReason);
 }
@@ -311,28 +314,68 @@ void AEMSCheckpoint::ArmTriggerWhenPlayerReady()
 		return;
 	}
 
-	APawn* PlayerPawn = UGameplayStatics::GetPlayerPawn(this, 0);
+	APawn* PlayerPawn = GetRestoredPlayerPawn();
 	if (!PlayerPawn)
 	{
+		// Other players may enter after the initial overlap-settling tick even
+		// while EMS's configured controller is waiting for its own pawn.
+		bWaitingForPlayerPawn = true;
+		if (SavedTriggerCollision != ECollisionEnabled::NoCollision)
+		{
+			Trigger->OnComponentBeginOverlap.AddUniqueDynamic(this, &AEMSCheckpoint::HandleTriggerBeginOverlap);
+		}
+		// No player yet, or none at all on a server waiting for connections.
+		// Poll at a low rate rather than every frame for as long as that lasts.
+		constexpr float ArmWatchInterval = 0.25f;
 		if (!bArmWatchScheduled)
 		{
 			if (UWorld* World = GetWorld())
 			{
 				bArmWatchScheduled = true;
-				World->GetTimerManager().SetTimerForNextTick(this, &AEMSCheckpoint::ResolveArmWatch);
+				World->GetTimerManager().SetTimer(
+					ArmWatchTimer,
+					this,
+					&AEMSCheckpoint::ResolveArmWatch,
+					ArmWatchInterval,
+					false);
 			}
 		}
 		return;
 	}
 
+	// A late configured pawn must establish its startup/placement overlap while
+	// unbound, just as a pawn present during the initial deferred arm does.
+	Trigger->OnComponentBeginOverlap.RemoveDynamic(this, &AEMSCheckpoint::HandleTriggerBeginOverlap);
 	PlaceRestoredPlayer(PlayerPawn);
+	Trigger->UpdateOverlaps();
+	bWaitingForPlayerPawn = false;
 
 	if (SavedTriggerCollision != ECollisionEnabled::NoCollision)
 	{
-		// At least one tick has passed since collision was restored. The local player
-		// exists and startup/restore overlap establishment happened while unbound.
+		// At least one tick has passed since collision was restored.
 		Trigger->OnComponentBeginOverlap.AddUniqueDynamic(this, &AEMSCheckpoint::HandleTriggerBeginOverlap);
 	}
+}
+
+bool AEMSCheckpoint::IsPlayerPawn(const AActor* Actor)
+{
+	const APawn* Pawn = Cast<APawn>(Actor);
+	const AController* Controller = Pawn ? Pawn->GetController() : nullptr;
+	return Controller && Controller->IsPlayerController();
+}
+
+APawn* AEMSCheckpoint::GetRestoredPlayerPawn() const
+{
+	// EMS restores one player's state, the controller it is configured for, so
+	// that is the player a checkpoint load places. Index 0 is only the fallback.
+	if (const UEMSObject* EMS = UEMSObject::Get(this))
+	{
+		if (const APlayerController* Controller = EMS->GetPlayerController())
+		{
+			return Controller->GetPawn();
+		}
+	}
+	return UGameplayStatics::GetPlayerPawn(this, 0);
 }
 
 bool AEMSCheckpoint::PlaceRestoredPlayer(APawn* PlayerPawn)
@@ -513,7 +556,17 @@ void AEMSCheckpoint::PostEditChangeProperty(FPropertyChangedEvent& PropertyChang
 void AEMSCheckpoint::PostDuplicate(EDuplicateMode::Type DuplicateMode)
 {
 	Super::PostDuplicate(DuplicateMode);
-	if (DuplicateMode != EDuplicateMode::PIE)
+	if (DuplicateMode != EDuplicateMode::PIE
+		&& EMSAddons::ShouldRegenerateImportedIdentity(this, &AEMSCheckpoint::CheckpointId))
+	{
+		RegenerateCheckpointId();
+	}
+}
+
+void AEMSCheckpoint::PostEditImport()
+{
+	Super::PostEditImport();
+	if (EMSAddons::ShouldRegenerateImportedIdentity(this, &AEMSCheckpoint::CheckpointId))
 	{
 		RegenerateCheckpointId();
 	}
@@ -607,7 +660,9 @@ void AEMSCheckpoint::HandleTriggerBeginOverlap(
 	bool bFromSweep,
 	const FHitResult& SweepResult)
 {
-	if (!bActivateOnPlayerOverlap || !OtherActor || OtherActor != UGameplayStatics::GetPlayerPawn(this, 0))
+	// Any player's pawn, not only local player 0: on a listen or dedicated
+	// server every connected player can reach a checkpoint first.
+	if (!bActivateOnPlayerOverlap || !IsPlayerPawn(OtherActor))
 	{
 		return;
 	}
@@ -624,6 +679,13 @@ void AEMSCheckpoint::HandleTriggerBeginOverlap(
 		{
 			ScheduleLoadWatch();
 		}
+		return;
+	}
+
+	// Until the arm watch observes the configured pawn, its first overlap may
+	// come from spawning/restoration. Other players are already armed normally.
+	if (bWaitingForPlayerPawn && OtherActor == GetRestoredPlayerPawn())
+	{
 		return;
 	}
 

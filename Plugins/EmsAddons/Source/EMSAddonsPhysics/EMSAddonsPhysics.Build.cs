@@ -14,9 +14,7 @@ public class EMSAddonsPhysics : ModuleRules
 			{
 				"Core",
 				"CoreUObject",
-				"Engine",
-				"EasyMultiSave",
-				"EMSAddonsCore"
+				"Engine"
 			});
 	}
 }

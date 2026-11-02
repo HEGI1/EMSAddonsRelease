@@ -35,9 +35,13 @@ Collection needs no setup.
   to explain missing support with, so it never runs the Begin Play check.
   Ordinary gameplay — a jump, an object knocked off a ledge, debris falling
   into a pit — reaches neither condition and is never frozen.
-- It resumes as soon as a level becomes visible again and anything is loaded
-  under the owner, including geometry further down than the original floor.
-  Falling onto that is ordinary physics.
+- Streaming events check for usable support below the owner, including geometry
+  further down than the original floor. Collision from a level being removed is
+  ignored even while it remains registered, so overlapping streaming changes
+  cannot release a body onto a disappearing floor. Loaded geometry below that
+  floor can still release it; falling onto that is ordinary physics. BSP
+  collision belongs to its level rather than to an actor and counts as support
+  the same way.
 - Suspending clears velocity and turns gravity off for every simulating primitive
   on the owner; resuming hands the gravity setting back exactly as it was. An
   actor hidden while suspended gets it back at **End Play** too.

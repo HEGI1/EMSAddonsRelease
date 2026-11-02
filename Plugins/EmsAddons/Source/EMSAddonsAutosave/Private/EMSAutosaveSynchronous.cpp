@@ -82,6 +82,14 @@ void UEMSAutosaveSubsystem::CompleteSynchronousAutosave(
 		|| ActiveReason != CompletedReason
 		|| !ActiveSaveSlot.Equals(CompletedSlot, ESearchCase::IgnoreCase))
 	{
+		// The reservation is gone, so the EMS broadcast below is skipped, but the
+		// slot was still rewritten. A checkpoint paired with the previous slot
+		// state must not stay current, which that broadcast would have ensured.
+		if (bSuccess)
+		{
+			AddonSaveSlotAwaitingActorsSaved.Reset();
+			ClearCheckpointAfterSupersedingSave(CompletedSlot);
+		}
 		return;
 	}
 

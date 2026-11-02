@@ -126,14 +126,7 @@ FEMSInstanceSourceId AEMSInstanceManager::BuildSourceId(
 void AEMSInstanceManager::CollectFoliageSources(
 	AInstancedFoliageActor* FoliageActor)
 {
-	// Owner stability is checked before the types are walked because an Instanced
-	// Foliage Actor that has one has them all, unlike an ordinary actor which may
-	// carry no instanced components at all.
-	if (!IsStableSourceOwner(FoliageActor))
-	{
-		return;
-	}
-
+	// CollectSources already validated this owner once for both discovery passes.
 	FGuid OwnerInstanceGuid;
 	FSoftObjectPath OwnerPath;
 	if (!BuildStableOwnerIdentity(
@@ -192,7 +185,25 @@ AActor* AEMSInstanceManager::FindSourceOwner(
 	// the actor-instance GUID inside the matching stable world scope.
 	if (!SourceId.OwnerInstanceGuid.IsValid())
 	{
-		return Cast<AActor>(SourceId.OwnerPath.ResolveObject());
+		AActor* ResolvedOwner = Cast<AActor>(SourceId.OwnerPath.ResolveObject());
+		return IsValid(ResolvedOwner)
+			&& ResolvedOwner->GetWorld() == GetWorld()
+			&& (!ScopedReplacementLevel || ResolvedOwner->GetLevel() == ScopedReplacementLevel)
+			&& IsLevelReadyForSourceDiscovery(ResolvedOwner->GetLevel())
+			&& MakeLevelIdentity(ResolvedOwner->GetLevel()) == SourceId.LevelIdentity
+			? ResolvedOwner
+			: nullptr;
+	}
+
+	if (ScopedOwnerIndex)
+	{
+		AActor* const* Indexed = ScopedOwnerIndex->Find(SourceId.OwnerInstanceGuid);
+		return Indexed
+			&& IsValid(*Indexed)
+			&& (*Indexed)->GetWorld() == GetWorld()
+			&& MakeLevelIdentity((*Indexed)->GetLevel()) == SourceId.LevelIdentity
+			? *Indexed
+			: nullptr;
 	}
 
 	UWorld* World = GetWorld();
@@ -203,7 +214,8 @@ AActor* AEMSInstanceManager::FindSourceOwner(
 
 	for (ULevel* Level : World->GetLevels())
 	{
-		if (!IsLevelReadyForSourceDiscovery(Level)
+		if ((ScopedReplacementLevel && Level != ScopedReplacementLevel)
+			|| !IsLevelReadyForSourceDiscovery(Level)
 			|| MakeLevelIdentity(Level) != SourceId.LevelIdentity)
 		{
 			continue;
@@ -382,6 +394,17 @@ UInstancedStaticMeshComponent* AEMSInstanceManager::EnsureReplacementSource(
 		return nullptr;
 	}
 
+	UInstancedStaticMeshComponent* SourceComponent = KnownTemplate
+		? KnownTemplate
+		: FindTemplateComponent(Descriptor.TemplateSourceId);
+	AActor* SourceOwner = SourceComponent ? SourceComponent->GetOwner() : nullptr;
+	UClass* ComponentClass = GetReplacementComponentClass(SourceComponent);
+	if (!SourceOwner || !ComponentClass)
+	{
+		return nullptr;
+	}
+
+	// Do not load replacement assets until the template's level is eligible.
 	UStaticMesh* ReplacementMesh =
 		Cast<UStaticMesh>(Descriptor.ReplacementMeshPath.ResolveObject());
 	if (!ReplacementMesh)
@@ -390,16 +413,6 @@ UInstancedStaticMeshComponent* AEMSInstanceManager::EnsureReplacementSource(
 			Cast<UStaticMesh>(Descriptor.ReplacementMeshPath.TryLoad());
 	}
 	if (!ReplacementMesh)
-	{
-		return nullptr;
-	}
-
-	UInstancedStaticMeshComponent* SourceComponent = KnownTemplate
-		? KnownTemplate
-		: FindTemplateComponent(Descriptor.TemplateSourceId);
-	AActor* SourceOwner = SourceComponent ? SourceComponent->GetOwner() : nullptr;
-	UClass* ComponentClass = GetReplacementComponentClass(SourceComponent);
-	if (!SourceOwner || !ComponentClass)
 	{
 		return nullptr;
 	}
@@ -475,8 +488,9 @@ UInstancedStaticMeshComponent* AEMSInstanceManager::EnsureReplacementSource(
 	return ReplacementComponent;
 }
 
-void AEMSInstanceManager::EnsureSavedReplacementSources()
+void AEMSInstanceManager::EnsureSavedReplacementSources(const ULevel* OnlyLevel)
 {
+	TGuardValue<const ULevel*> LevelGuard(ScopedReplacementLevel, OnlyLevel);
 	const int32 SourceCount = FMath::Min(
 		SavedReplacementSources.Num(),
 		MaxReplacementSources);
@@ -484,6 +498,43 @@ void AEMSInstanceManager::EnsureSavedReplacementSources()
 	{
 		return;
 	}
+
+	// Index the discovered levels' actors by instance GUID once, rather than
+	// letting each World Partition descriptor walk them all on every pass.
+	TMap<FGuid, AActor*> OwnerIndex;
+	const bool bNeedsGuidIndex = SavedReplacementSources.ContainsByPredicate(
+		[](const FEMSInstanceReplacementSource& Descriptor)
+		{
+			return Descriptor.TemplateSourceId.OwnerInstanceGuid.IsValid();
+		});
+	if (bNeedsGuidIndex)
+	{
+		if (UWorld* World = GetWorld())
+		{
+			for (ULevel* Level : World->GetLevels())
+			{
+				if ((OnlyLevel && Level != OnlyLevel)
+					|| !IsLevelReadyForSourceDiscovery(Level))
+				{
+					continue;
+				}
+				for (AActor* Actor : Level->Actors)
+				{
+					if (IsValid(Actor))
+					{
+						const FGuid InstanceGuid = FActorInstanceGuid::GetActorInstanceGuid(*Actor);
+						if (InstanceGuid.IsValid())
+						{
+							OwnerIndex.Add(InstanceGuid, Actor);
+						}
+					}
+				}
+			}
+		}
+	}
+	TGuardValue<const TMap<FGuid, AActor*>*> IndexGuard(
+		ScopedOwnerIndex,
+		bNeedsGuidIndex ? &OwnerIndex : nullptr);
 
 	int32 PreviousResolved = INDEX_NONE;
 	for (int32 Pass = 0; Pass < SourceCount; ++Pass)
@@ -555,6 +606,26 @@ AEMSInstanceManager::GetOrCreateReplacementSource(
 	return Created;
 }
 
+void AEMSInstanceManager::RegisterReplacementTarget(
+	UInstancedStaticMeshComponent* Component)
+{
+	FEMSInstanceSourceId ExistingId;
+	if (!Component || FindRegisteredSourceId(Component, ExistingId))
+	{
+		return;
+	}
+
+	// The same checks discovery applies, so the target is registered exactly as
+	// a later full pass would register it.
+	AActor* TargetOwner = Component->GetOwner();
+	if (IsSupportedActor(TargetOwner)
+		&& IsSupportedSource(Component)
+		&& IsStableSourceOwner(TargetOwner))
+	{
+		RegisterDiscoveredSource(BuildSourceId(Component), Component);
+	}
+}
+
 void AEMSInstanceManager::ReadInstanceCustomData(
 	const UInstancedStaticMeshComponent* Component,
 	const int32 InstanceIndex,
@@ -595,7 +666,7 @@ bool AEMSInstanceManager::ReplaceInstance(
 		ReplacementIndex);
 }
 
-void AEMSInstanceManager::CollectSources()
+void AEMSInstanceManager::CollectSources(const ULevel* OnlyLevel)
 {
 	TRACE_CPUPROFILER_EVENT_SCOPE(EMSAddons_CollectInstancedSources);
 	UWorld* World = GetWorld();
@@ -608,12 +679,13 @@ void AEMSInstanceManager::CollectSources()
 	// restore. Recreate their target sources first so this discovery pass sees an
 	// empty authored baseline and the normal delta engine can restore additions.
 	// FindSourceOwner itself refuses partially assembled streaming levels.
-	EnsureSavedReplacementSources();
+	EnsureSavedReplacementSources(OnlyLevel);
 
 	TArray<UInstancedStaticMeshComponent*> Components;
 	for (ULevel* Level : World->GetLevels())
 	{
-		if (!IsLevelReadyForSourceDiscovery(Level))
+		if ((OnlyLevel && Level != OnlyLevel)
+			|| !IsLevelReadyForSourceDiscovery(Level))
 		{
 			continue;
 		}
@@ -627,29 +699,24 @@ void AEMSInstanceManager::CollectSources()
 				continue;
 			}
 
+			// Reject each owner once, even when it participates in both passes.
+			Components.Reset();
+			Actor->GetComponents(Components);
+			AInstancedFoliageActor* FoliageActor = Cast<AInstancedFoliageActor>(Actor);
+			if ((!FoliageActor && Components.IsEmpty()) || !IsStableSourceOwner(Actor))
+			{
+				continue;
+			}
+
 			// An Instanced Foliage Actor owns Foliage-module components and is
 			// handled through its foliage infos so those sources retain world-space
 			// identity. It then falls through to the ordinary component pass rather
 			// than being skipped, because generated replacement sources live on it
 			// as plain engine components. IsSupportedSource excludes everything the
 			// Foliage module owns, so no component is seen by both passes.
-			if (AInstancedFoliageActor* FoliageActor =
-				Cast<AInstancedFoliageActor>(Actor))
+			if (FoliageActor)
 			{
 				CollectFoliageSources(FoliageActor);
-			}
-
-			Components.Reset();
-			Actor->GetComponents(Components);
-
-			// Owner stability is checked last, and only once per owner that
-			// actually has instanced components. Checking it first counted an
-			// ignored or component-less actor as a rejected source owner, so the
-			// skipped-owner warning fired for actors the project deliberately
-			// excluded and scaled with component count rather than actor count.
-			if (Components.IsEmpty() || !IsStableSourceOwner(Actor))
-			{
-				continue;
 			}
 
 			for (UInstancedStaticMeshComponent* Component : Components)

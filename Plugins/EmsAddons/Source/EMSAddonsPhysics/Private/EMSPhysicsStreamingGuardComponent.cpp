@@ -38,6 +38,7 @@ void UEMSPhysicsStreamingGuardComponent::BeginPlay()
 	// Play on the same component, so nothing may carry over from the last time.
 	bSuspended = false;
 	SuspendedBodies.Reset();
+	DepartingLevels.Reset();
 
 	UWorld* World = GetWorld();
 	if (!World)
@@ -81,6 +82,7 @@ void UEMSPhysicsStreamingGuardComponent::EndPlay(const EEndPlayReason::Type EndP
 	// ground was missing. Handing them back here is what keeps a hidden and shown
 	// actor from coming back permanently unable to simulate.
 	ResumeOwnerPhysics();
+	DepartingLevels.Reset();
 
 	Super::EndPlay(EndPlayReason);
 }
@@ -98,7 +100,15 @@ void UEMSPhysicsStreamingGuardComponent::HandleLevelBeginMakingInvisible(
 	const ULevelStreaming* StreamingLevel,
 	ULevel* LoadedLevel)
 {
-	if (InWorld != GetWorld() || bSuspended)
+	if (InWorld != GetWorld())
+	{
+		return;
+	}
+	if (LoadedLevel)
+	{
+		DepartingLevels.Add(LoadedLevel);
+	}
+	if (bSuspended)
 	{
 		return;
 	}
@@ -120,17 +130,40 @@ void UEMSPhysicsStreamingGuardComponent::HandleLevelStreamingStateChanged(
 	ELevelStreamingState PreviousState,
 	ELevelStreamingState NewState)
 {
-	if (InWorld != GetWorld() || !bSuspended)
+	if (InWorld != GetWorld())
+	{
+		return;
+	}
+	if (LoadedLevel)
+	{
+		if (NewState == ELevelStreamingState::MakingInvisible)
+		{
+			DepartingLevels.Add(LoadedLevel);
+		}
+		else if (NewState == ELevelStreamingState::LoadedVisible
+			|| NewState == ELevelStreamingState::LoadedNotVisible
+			|| NewState == ELevelStreamingState::Unloaded
+			|| NewState == ELevelStreamingState::Removed
+			|| NewState == ELevelStreamingState::FailedToLoad)
+		{
+			DepartingLevels.Remove(LoadedLevel);
+		}
+	}
+	for (auto It = DepartingLevels.CreateIterator(); It; ++It)
+	{
+		if (!It->IsValid()) It.RemoveCurrent();
+	}
+	if (!bSuspended)
 	{
 		return;
 	}
 
-	// Any streaming state change at all can be the one that fills the hole, so
-	// the probe decides rather than the level's identity or its new state. Nor is
+	// The event's level need not own the support, so the probe decides. Nor is
 	// LoadedVisible enough on its own: the opening check can suspend an actor a
 	// tick before the cell under it finishes becoming visible, and that cell then
 	// never reports the edge again. Something loaded below is enough - falling
-	// onto it is ordinary physics, not the defect this guards against.
+	// onto it is ordinary physics, not the defect this guards against. Collision
+	// from a departing level is excluded even while still registered.
 	if (HasAnySupportBelow())
 	{
 		ResumeOwnerPhysics();
@@ -139,7 +172,8 @@ void UEMSPhysicsStreamingGuardComponent::HandleLevelStreamingStateChanged(
 
 bool UEMSPhysicsStreamingGuardComponent::TraceBelowOwner(
 	const double Reach,
-	FHitResult& OutHit) const
+	FHitResult& OutHit,
+	const bool bIgnoreDepartingLevels) const
 {
 	const AActor* Owner = GetOwner();
 	UWorld* World = Owner ? Owner->GetWorld() : nullptr;
@@ -167,13 +201,35 @@ bool UEMSPhysicsStreamingGuardComponent::TraceBelowOwner(
 		| ECC_TO_BITFIELD(ECC_WorldDynamic)
 		| ECC_TO_BITFIELD(ECC_PhysicsBody));
 
-	return World->LineTraceSingleByObjectType(OutHit, Start, End, ObjectParams, QueryParams);
+	if (!bIgnoreDepartingLevels)
+	{
+		return World->LineTraceSingleByObjectType(OutHit, Start, End, ObjectParams, QueryParams);
+	}
+
+	// An object multi-trace also finds usable geometry below a departing floor.
+	// Rejecting just the first hit would otherwise leave the body suspended even
+	// when a second, loaded floor can safely catch it.
+	TArray<FHitResult> Hits;
+	World->LineTraceMultiByObjectType(Hits, Start, End, ObjectParams, QueryParams);
+	for (const FHitResult& Hit : Hits)
+	{
+		// BSP collision has no owning actor; the component level is its outer level.
+		// A hit whose level cannot be named at all cannot be departing either.
+		const UPrimitiveComponent* SupportComponent = Hit.GetComponent();
+		ULevel* SupportLevel = SupportComponent ? SupportComponent->GetComponentLevel() : nullptr;
+		if (!SupportLevel || (!SupportLevel->bIsBeingRemoved && !DepartingLevels.Contains(SupportLevel)))
+		{
+			OutHit = Hit;
+			return true;
+		}
+	}
+	return false;
 }
 
 bool UEMSPhysicsStreamingGuardComponent::HasAnySupportBelow() const
 {
 	FHitResult Hit;
-	return TraceBelowOwner(MissingWorldProbeDepth, Hit);
+	return TraceBelowOwner(MissingWorldProbeDepth, Hit, true);
 }
 
 bool UEMSPhysicsStreamingGuardComponent::IsSupportedByLevel(const ULevel* Level) const
@@ -189,9 +245,9 @@ bool UEMSPhysicsStreamingGuardComponent::IsSupportedByLevel(const ULevel* Level)
 		return false;
 	}
 
+	// The component level, not the owner's, so BSP floors name their level too.
 	const UPrimitiveComponent* HitComponent = Hit.GetComponent();
-	const AActor* SupportActor = HitComponent ? HitComponent->GetOwner() : nullptr;
-	return SupportActor && SupportActor->GetLevel() == Level;
+	return HitComponent && HitComponent->GetComponentLevel() == Level;
 }
 
 void UEMSPhysicsStreamingGuardComponent::SuspendOwnerPhysics()

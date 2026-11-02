@@ -5,6 +5,7 @@
 #include "Components/PrimitiveComponent.h"
 #include "EMSActorSaveInterface.h"
 #include "EMSAddonsActorBinary.h"
+#include "EMSAddonsActorNames.h"
 #include "EMSAddonsWorldPartition.h"
 #include "EMSData.h"
 #include "EMSObject.h"
@@ -22,6 +23,8 @@
 #include "TimerManager.h"
 #include "WorldPartition/WorldPartition.h"
 #include "WorldPartition/WorldPartitionLevelStreamingDynamic.h"
+#include "WorldPartition/WorldPartitionRuntimeCell.h"
+#include "WorldPartition/WorldPartitionRuntimeHash.h"
 #include "WorldPartition/WorldPartitionRuntimeLevelStreamingCell.h"
 
 namespace
@@ -84,6 +87,16 @@ namespace
 					return true;
 				}
 			}
+			else if (const UPrimitiveComponent* BaseComponent =
+				Cast<UPrimitiveComponent>(Pawn->GetMovementBaseObject()))
+			{
+				// Level-owned collision has no base actor (for example a model
+				// component). Its level still supplies the character's support.
+				if (BaseComponent->GetComponentLevel() == Level)
+				{
+					return true;
+				}
+			}
 		}
 
 		const UPrimitiveComponent* RootPrimitive = Cast<UPrimitiveComponent>(Actor->GetRootComponent());
@@ -111,10 +124,16 @@ namespace
 			return false;
 		}
 		const UPrimitiveComponent* HitComponent = Hit.GetComponent();
-		const AActor* SupportActor = HitComponent ? HitComponent->GetOwner() : nullptr;
-		return SupportActor && SupportActor->GetLevel() == Level;
+		return HitComponent && HitComponent->GetComponentLevel() == Level;
 	}
 }
+
+#if WITH_DEV_AUTOMATION_TESTS
+bool UEMSWorldPartitionRuntimeSubsystem::IsActorSupportedByLevelForTesting(UWorld* World, AActor* Actor, const ULevel* Level)
+{
+	return IsActorSupportedByLevel(World, Actor, Level);
+}
+#endif
 
 bool UEMSWorldPartitionRuntimeSubsystem::DoesSupportWorldType(const EWorldType::Type WorldType) const
 {
@@ -170,6 +189,9 @@ void UEMSWorldPartitionRuntimeSubsystem::Deinitialize()
 	UnbindEMSDelegate();
 	LiveActorsById.Empty();
 	LiveIdsByActor.Empty();
+	RejectedRecordIds.Empty();
+	RuntimeCellGuids.Empty();
+	bRuntimeCellGuidsBuilt = false;
 	PrimaryManager.Reset();
 	Super::Deinitialize();
 }
@@ -237,9 +259,17 @@ void UEMSWorldPartitionRuntimeSubsystem::RefreshPrimaryManager(const bool bCreat
 
 	if (Managers.IsEmpty() && bCreateIfMissing)
 	{
+		const FName ManagerName(TEXT("EMS_WorldPartitionRuntimeManager"));
+		if (!EMSAddons::ReleaseDestroyedActorName(World->PersistentLevel, ManagerName))
+		{
+			UE_LOG(LogEMSAddonsWorldPartition, Warning,
+				TEXT("Another object occupies the persistent runtime manager's name; creation will be retried. World=%s"),
+				*World->GetPathName());
+			return;
+		}
 		FActorSpawnParameters Parameters;
 		Parameters.OverrideLevel = World->PersistentLevel;
-		Parameters.Name = TEXT("EMS_WorldPartitionRuntimeManager");
+		Parameters.Name = ManagerName;
 		Parameters.NameMode = FActorSpawnParameters::ESpawnActorNameMode::Required_ErrorAndReturnNull;
 		Parameters.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
 		AEMSWorldPartitionRuntimeManager* Created = World->SpawnActor<AEMSWorldPartitionRuntimeManager>(
@@ -765,6 +795,34 @@ bool UEMSWorldPartitionRuntimeSubsystem::ValidateRecord(
 		&& !OutClass->IsChildOf(AEMSWorldPartitionRuntimeManager::StaticClass());
 }
 
+bool UEMSWorldPartitionRuntimeSubsystem::DoesRuntimeCellExist(const FGuid& CellGuid)
+{
+	if (!bRuntimeCellGuidsBuilt)
+	{
+		const UWorldPartition* WorldPartition = GetWorld() ? GetWorld()->GetWorldPartition() : nullptr;
+		if (WorldPartition && WorldPartition->RuntimeHash)
+		{
+			WorldPartition->RuntimeHash->ForEachStreamingCells(
+				[this](const UWorldPartitionRuntimeCell* Cell)
+				{
+					if (Cell)
+					{
+						RuntimeCellGuids.Add(Cell->GetGuid());
+					}
+					return true;
+				});
+		}
+		//An empty hash means streaming is not generated yet, so ask again later
+		//rather than declare every required cell gone.
+		if (RuntimeCellGuids.IsEmpty())
+		{
+			return true;
+		}
+		bRuntimeCellGuidsBuilt = true;
+	}
+	return RuntimeCellGuids.Contains(CellGuid);
+}
+
 //By value on purpose. Restoration runs user construction, BeginPlay, and the EMS load
 //callbacks, any of which may spawn another managed actor and reallocate the manager's
 //record array, so this may not hold a reference into it.
@@ -777,17 +835,23 @@ bool UEMSWorldPartitionRuntimeSubsystem::RestoreRecord(const FEMSWorldPartitionR
 	UClass* ActorClass = nullptr;
 	if (!ValidateRecord(Record, ActorClass))
 	{
+		RejectedRecordIds.Add(Record.LocalId);
+		UE_LOG(
+			LogEMSAddonsWorldPartition,
+			Warning,
+			TEXT("A dormant runtime actor record cannot be restored: its version, transform, class, or saved data is invalid. It is kept in the save and not retried until the next load. LocalId=%s Class=%s"),
+			*Record.LocalId.ToString(EGuidFormats::Digits),
+			*Record.ActorClass.ToString());
 		return false;
 	}
 
 	const FName StableName = MakeStableActorName(Record.LocalId);
-	for (AActor* ExistingActor : GetWorld()->PersistentLevel->Actors)
+	//A gameplay-destroyed actor keeps its name until garbage collection; a load that brings
+	//its record back before then must not wait for the next collection.
+	if (!EMSAddons::ReleaseDestroyedActorName(GetWorld()->PersistentLevel, StableName))
 	{
-		if (IsValid(ExistingActor) && ExistingActor->GetFName() == StableName)
-		{
-			UE_LOG(LogEMSAddonsWorldPartition, Warning, TEXT("An unrelated actor occupies a managed stable name; the dormant record is retained. Name=%s Actor=%s"), *StableName.ToString(), *ExistingActor->GetPathName());
-			return false;
-		}
+		UE_LOG(LogEMSAddonsWorldPartition, Warning, TEXT("An unrelated object occupies a managed stable name; the dormant record is retained. Name=%s"), *StableName.ToString());
+		return false;
 	}
 
 	FActorSpawnParameters Parameters;
@@ -880,11 +944,15 @@ void UEMSWorldPartitionRuntimeSubsystem::RestoreVisibleDormantRecords()
 			break;
 		}
 		const FEMSWorldPartitionRuntimeActorRecord& Record = Manager->RuntimeActorRecords[Index];
-		if (LiveActorsById.Contains(Record.LocalId) || DuplicateIds.Contains(Record.LocalId))
+		if (LiveActorsById.Contains(Record.LocalId)
+			|| DuplicateIds.Contains(Record.LocalId)
+			|| RejectedRecordIds.Contains(Record.LocalId))
 		{
 			continue;
 		}
-		if (Record.RequiredCellGuid.IsValid() && !IsCellVisible(GetWorld(), Record.RequiredCellGuid))
+		if (Record.RequiredCellGuid.IsValid()
+			&& DoesRuntimeCellExist(Record.RequiredCellGuid)
+			&& !IsCellVisible(GetWorld(), Record.RequiredCellGuid))
 		{
 			continue;
 		}
@@ -909,7 +977,9 @@ void UEMSWorldPartitionRuntimeSubsystem::Reconcile()
 		AActor* Actor = LiveActorsById.FindRef(LocalId).Get();
 		if (!IsValid(Actor))
 		{
-			LiveActorsById.Remove(LocalId);
+			// Invalidation may bypass the normal destroyed-actor callback.
+			// The shared removal path cleans both ownership maps in that case.
+			DestroyActorInternally(LocalId);
 			continue;
 		}
 		const EMSAddonsWorldPartition::FEMSWorldPartitionCellCoverage Coverage =
@@ -965,6 +1035,8 @@ void UEMSWorldPartitionRuntimeSubsystem::HandleManagerPreLoad(AEMSWorldPartition
 		return;
 	}
 	bPrimaryManagerLoadedSincePersistentLoadCompletion = false;
+	//The load replaces every record, so earlier rejections no longer apply.
+	RejectedRecordIds.Empty();
 	TArray<FGuid> LiveIds;
 	LiveActorsById.GetKeys(LiveIds);
 	if (!LiveIds.IsEmpty())

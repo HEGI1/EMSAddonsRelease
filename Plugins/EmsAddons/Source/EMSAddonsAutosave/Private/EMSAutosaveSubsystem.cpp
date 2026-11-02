@@ -399,6 +399,9 @@ void UEMSAutosaveSubsystem::StartSave(
 		return;
 	}
 
+	// EMS unpauses a paused game when it creates the task, and only the activated
+	// task pauses it again. A task abandoned below is never activated.
+	const bool bGameWasPaused = UGameplayStatics::IsGamePaused(this);
 	ActiveSaveTask = UEMSAsyncSaveGame::AsyncSaveActors(this, Settings->SaveDataFlags);
 	if (!ActiveSaveTask)
 	{
@@ -410,10 +413,28 @@ void UEMSAutosaveSubsystem::StartSave(
 		// which reaches StartSave again with bSaveActive still false and recurses
 		// for as long as task creation keeps failing. The retry timer is the only
 		// thing that may drive the next attempt.
-		EnqueueRequest(Reason, SaveSlot, CheckpointRecord, CheckpointActor);
+		if (!EnqueueRequest(Reason, SaveSlot, CheckpointRecord, CheckpointActor))
+		{
+			// A checkpoint whose actor has gone cannot be queued again. Report it
+			// rather than letting the request disappear without a callback.
+			if (IsValid(CheckpointActor))
+			{
+				CheckpointActor->MarkActivationFailed();
+			}
+			OnAutosaveFailed.Broadcast(Reason);
+			return;
+		}
 		ScheduleRetry(0.1f);
 		return;
 	}
+
+	const auto RestorePauseForAbandonedTask = [this, bGameWasPaused]()
+	{
+		if (bGameWasPaused && !UGameplayStatics::IsGamePaused(this))
+		{
+			UGameplayStatics::SetGamePaused(this, true);
+		}
+	};
 
 	bSaveActive = true;
 	ActiveReason = Reason;
@@ -433,6 +454,7 @@ void UEMSAutosaveSubsystem::StartSave(
 	// operation before the unactivated task begins. Never activate stale work.
 	if (!bSaveActive || ActiveSaveTask != SaveTask)
 	{
+		RestorePauseForAbandonedTask();
 		return;
 	}
 
@@ -451,6 +473,7 @@ void UEMSAutosaveSubsystem::StartSave(
 	{
 		const TWeakObjectPtr<AEMSCheckpoint> AbortedActor = ActiveCheckpointActor;
 		ResetActiveSaveState();
+		RestorePauseForAbandonedTask();
 		if (ReservedGeneration.IsValid())
 		{
 			// The EMS task never activated, so rolling back this reservation is safe.

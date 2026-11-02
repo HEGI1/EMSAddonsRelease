@@ -27,9 +27,9 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_TwoParams(
  * Explicitly spawns runtime actors into its exact level and persists every
  * actor created through Spawn Actor using Easy Multi Save actor binary data.
  *
- * The spawner never creates actors automatically. Place one in the level and
- * call Spawn Actor on that specific instance whenever gameplay needs a new
- * persistent runtime actor.
+ * Place one in the level and call Spawn Actor on that instance whenever gameplay
+ * needs a new persistent runtime actor. The spawner does not create new gameplay
+ * actors on its own; during EMS loading, it automatically recreates saved actors.
  */
 UCLASS(Blueprintable, ClassGroup = (EasyMultiSave), meta = (DisplayName = "EMS Actor Spawner"))
 class EMSADDONSACTORSPAWNER_API AEMSActorSpawner : public AActor, public IEMSActorSaveInterface
@@ -148,6 +148,13 @@ public:
 
 #if WITH_EDITOR
 	virtual void PostDuplicate(bool bDuplicateForPIE) override;
+
+	/**
+	 * Copy/paste and some editor duplication paths import the source's
+	 * properties instead of calling PostDuplicate, which would copy its
+	 * SpawnerId. Two spawners sharing one id claim each other's actors.
+	 */
+	virtual void PostEditImport() override;
 #endif
 
 protected:

@@ -6,6 +6,7 @@
 #include "EMSAddonsAuthority.h"
 #include "EMSAddonsGameThread.h"
 #include "EMSAddonsLevelSequence.h"
+#include "EMSLevelSequencePlayer.h"
 #include "EMSMisc.h"
 #include "EMSObject.h"
 #include "EMSTypes.h"
@@ -23,7 +24,7 @@
 
 AEMSLevelSequenceActor::AEMSLevelSequenceActor(
 	const FObjectInitializer& ObjectInitializer)
-	: Super(ObjectInitializer)
+	: Super(ObjectInitializer.SetDefaultSubobjectClass<UEMSLevelSequencePlayer>(TEXT("AnimationPlayer")))
 {
 	PrimaryActorTick.bCanEverTick = false;
 	LastRestoreResult = FEMSAddonResult::Success();
@@ -66,6 +67,7 @@ void AEMSLevelSequenceActor::BeginPlay()
 	bRuntimePlaybackActive = false;
 	RuntimeRequestedLoopCount = PlaybackSettings.LoopCount.Value;
 	RuntimeCompletedLoops = 0;
+	LastObservedNativeLoopCount = 0;
 
 	InitializeAutoPlayGateForBeginPlay();
 
@@ -146,6 +148,9 @@ void AEMSLevelSequenceActor::PlayLooping(const int32 NumLoops)
 
 	RuntimeRequestedLoopCount = FMath::Max(-1, NumLoops);
 	RuntimeCompletedLoops = 0;
+	BindSequencePlayerDelegates();
+	const UEMSLevelSequencePlayer* EMSPlayer = Cast<UEMSLevelSequencePlayer>(Player);
+	LastObservedNativeLoopCount = EMSPlayer ? EMSPlayer->GetCompletedLoopCount() : 0;
 	// Play/Pause delegates can be deferred by sequence evaluation. Keep the run
 	// active until Stop/Finished instead of relying on a timely pause callback.
 	bRuntimePlaybackActive = true;
@@ -207,8 +212,12 @@ bool AEMSLevelSequenceActor::CanAccessLevelSequence(
 bool AEMSLevelSequenceActor::CaptureLevelSequenceState()
 {
 	// EMS can finish its load before delayed bindings become available. Until
-	// restoration finishes, the live player is not the state we intend to save.
-	if (bRestoreRequested || IsLevelSequenceRestorePending() || bApplyingRestore)
+	// restoration finishes, the live player is not the state we intend to save,
+	// and after a restore that timed out it is the fallback autoplay instead.
+	if (bRestoreRequested
+		|| IsLevelSequenceRestorePending()
+		|| bApplyingRestore
+		|| bPreserveUnrestoredState)
 	{
 		return false;
 	}
@@ -221,6 +230,7 @@ bool AEMSLevelSequenceActor::CaptureLevelSequenceState()
 	}
 
 	BindSequencePlayerDelegates();
+	HandleSequenceLooped();
 	ULevelSequencePlayer* Player = GetPersistenceSequencePlayer();
 	if (!Player)
 	{
@@ -514,13 +524,22 @@ bool AEMSLevelSequenceActor::ApplyPersistedState(FText& OutReason)
 			RemainingLoopCount - PersistedState.CompletedLoops);
 	}
 
+	// The player keeps the authored loop count. The remaining budget belongs to
+	// the restored run only, so it is passed through PlayLooping below, which the
+	// engine reverts when that run stops. Writing it here would shorten every later
+	// replay. The seek below is not affected: loops are only counted while playing.
 	FMovieSceneSequencePlaybackSettings RestoredSettings = PlaybackSettings;
 	RestoredSettings.bAutoPlay = false;
 	RestoredSettings.PlayRate = FMath::Abs(PersistedState.PlayRate);
-	RestoredSettings.LoopCount.Value = RemainingLoopCount;
 
 	Player->SetPlaybackSettings(RestoredSettings);
 	Player->SetPlayRate(RestoredSettings.PlayRate);
+	if (UEMSLevelSequencePlayer* EMSPlayer = Cast<UEMSLevelSequencePlayer>(Player))
+	{
+		// Stopped/finished states need direction too. ChangePlaybackDirection
+		// starts playback, so restore the internal flag without starting play.
+		EMSPlayer->RestorePlaybackDirection(PersistedState.bReversePlayback);
+	}
 
 	const EUpdatePositionMethod UpdateMethod =
 		PositionRestorePolicy
@@ -559,13 +578,10 @@ bool AEMSLevelSequenceActor::ApplyPersistedState(FText& OutReason)
 		|| PersistedState.PlaybackStatus
 			== EEMSLevelSequencePlaybackStatus::Playing)
 	{
-		if (PersistedState.bReversePlayback)
+		Player->PlayLooping(RemainingLoopCount);
+		if (PersistedState.bReversePlayback != Player->IsReversed())
 		{
-			Player->PlayReverse();
-		}
-		else
-		{
-			Player->Play();
+			Player->ChangePlaybackDirection();
 		}
 		Player->Pause();
 		bRuntimeFinished = false;
@@ -580,6 +596,8 @@ bool AEMSLevelSequenceActor::ApplyPersistedState(FText& OutReason)
 	bRuntimePlaybackActive = Player->IsPlaying() || Player->IsPaused();
 	RuntimeRequestedLoopCount = RequestedLoopCount;
 	RuntimeCompletedLoops = PersistedState.CompletedLoops;
+	const UEMSLevelSequencePlayer* EMSPlayer = Cast<UEMSLevelSequencePlayer>(Player);
+	LastObservedNativeLoopCount = EMSPlayer ? EMSPlayer->GetCompletedLoopCount() : 0;
 	bApplyingRestore = false;
 	OutReason = FText::GetEmpty();
 	return true;
@@ -587,6 +605,7 @@ bool AEMSLevelSequenceActor::ApplyPersistedState(FText& OutReason)
 
 bool AEMSLevelSequenceActor::RestoreLevelSequenceState()
 {
+	bPreserveUnrestoredState = false;
 	FText Reason;
 	if (!ValidateStateInternal(Reason, false))
 	{
@@ -615,6 +634,7 @@ bool AEMSLevelSequenceActor::RestoreLevelSequenceState()
 
 void AEMSLevelSequenceActor::QueueRestoreForEMSCompletion()
 {
+	bPreserveUnrestoredState = false;
 	FText Reason;
 	if (!ValidateStateInternal(Reason, false))
 	{
@@ -675,6 +695,18 @@ void AEMSLevelSequenceActor::AttemptRestore()
 		{
 			bLevelLoadCompletionReceived = true;
 		}
+		else if (HasRestoreWaitExpired())
+		{
+			// The wait only orders this restore after the rest of the level.
+			// Giving up on it would let the fallback autoplay be saved over the
+			// saved progress, which is worse than restoring slightly early.
+			UE_LOG(
+				LogEMSAddonsLevelSequence,
+				Warning,
+				TEXT("EMS did not report the owning level as loaded within the restore timeout; the saved playback state is restored without waiting further. Actor=%s"),
+				*GetPathName());
+			bLevelLoadCompletionReceived = true;
+		}
 		else
 		{
 			ScheduleRestoreRetry();
@@ -698,8 +730,22 @@ void AEMSLevelSequenceActor::AttemptRestore()
 	bool bWaitingForBindings = false;
 	if (!IsLevelSequenceRuntimeReadyForRestore(bWaitingForBindings))
 	{
-		ScheduleRestoreRetry();
-		return;
+		if (!bWaitingForBindings || !HasRestoreWaitExpired())
+		{
+			ScheduleRestoreRetry();
+			return;
+		}
+
+		// The player is ready and only bindings are missing. A possessable can
+		// legitimately never bind - its actor sits in an unloaded World Partition
+		// cell, or gameplay binds it later - and abandoning the restore for that
+		// would lose the saved progress at the next save. Sequencer evaluates the
+		// bound tracks now and picks up the rest once their objects resolve.
+		UE_LOG(
+			LogEMSAddonsLevelSequence,
+			Warning,
+			TEXT("Level Sequence restore timed out waiting for bindings and was restored without the unresolved bindings. Actor=%s"),
+			*GetPathName());
 	}
 
 	if (!ApplyPersistedState(Reason))
@@ -720,20 +766,25 @@ void AEMSLevelSequenceActor::ScheduleRestoreRetry()
 		bRestoreClockStarted = true;
 	}
 
+	// Only a restore without a usable player reaches the timeout here; the EMS
+	// and binding waits proceed on their own once they expire. The saved state
+	// never applied, so it is kept rather than replaced by the fallback autoplay.
 	if (GetDeferralClockSeconds() - RestoreStartSeconds >= TimeoutSeconds)
 	{
+		bPreserveUnrestoredState = true;
 		FailRestore(LOCTEXT(
 			"LevelSequenceRestoreTimeout",
-			"Level Sequence restoration timed out while waiting for EMS, the player, or required bindings."));
+			"Level Sequence restoration timed out while waiting for the sequence player. The saved state is kept until a later restore."));
 		return;
 	}
 
 	UWorld* World = GetWorld();
 	if (!World)
 	{
+		bPreserveUnrestoredState = true;
 		FailRestore(LOCTEXT(
 			"LevelSequenceRestoreNoWorld",
-			"Level Sequence restoration cannot retry without a valid world."));
+			"Level Sequence restoration cannot retry without a valid world. The saved state is kept until a later restore."));
 		return;
 	}
 
@@ -742,6 +793,13 @@ void AEMSLevelSequenceActor::ScheduleRestoreRetry()
 	RestoreRetryTimer = World->GetTimerManager().SetTimerForNextTick(
 		this,
 		&AEMSLevelSequenceActor::AttemptRestore);
+}
+
+bool AEMSLevelSequenceActor::HasRestoreWaitExpired() const
+{
+	return bRestoreClockStarted
+		&& GetDeferralClockSeconds() - RestoreStartSeconds
+			>= FMath::Max(0.05f, RestoreTimeout);
 }
 
 void AEMSLevelSequenceActor::FinalizeRestore()
@@ -1007,9 +1065,10 @@ void AEMSLevelSequenceActor::BindSequencePlayerDelegates()
 	Player->OnFinished.AddUniqueDynamic(
 		this,
 		&AEMSLevelSequenceActor::HandleSequenceFinished);
-	Player->OnSequenceUpdated().AddUObject(
-		this,
-		&AEMSLevelSequenceActor::HandleSequenceUpdated);
+	if (UEMSLevelSequencePlayer* EMSPlayer = Cast<UEMSLevelSequencePlayer>(Player))
+	{
+		EMSPlayer->OnLoopsCompleted().AddUObject(this, &AEMSLevelSequenceActor::HandleSequenceLooped);
+	}
 }
 
 void AEMSLevelSequenceActor::UnbindSequencePlayerDelegates()
@@ -1034,7 +1093,10 @@ void AEMSLevelSequenceActor::UnbindSequencePlayerDelegates()
 	BoundSequencePlayer->OnFinished.RemoveDynamic(
 		this,
 		&AEMSLevelSequenceActor::HandleSequenceFinished);
-	BoundSequencePlayer->OnSequenceUpdated().RemoveAll(this);
+	if (UEMSLevelSequencePlayer* EMSPlayer = Cast<UEMSLevelSequencePlayer>(BoundSequencePlayer))
+	{
+		EMSPlayer->OnLoopsCompleted().RemoveAll(this);
+	}
 	BoundSequencePlayer = nullptr;
 }
 
@@ -1169,6 +1231,7 @@ void AEMSLevelSequenceActor::StartAuthoredAutoPlayWhenReady()
 	{
 		RuntimeRequestedLoopCount = PlaybackSettings.LoopCount.Value;
 		RuntimeCompletedLoops = 0;
+		LastObservedNativeLoopCount = 0;
 		Player->Play();
 	}
 }
@@ -1181,6 +1244,7 @@ void AEMSLevelSequenceActor::HandleSequencePlayed()
 		{
 			RuntimeRequestedLoopCount = PlaybackSettings.LoopCount.Value;
 			RuntimeCompletedLoops = 0;
+			LastObservedNativeLoopCount = 0;
 		}
 
 		bRuntimeHasStarted = true;
@@ -1222,70 +1286,28 @@ void AEMSLevelSequenceActor::HandleSequenceFinished()
 	}
 }
 
-void AEMSLevelSequenceActor::HandleSequenceUpdated(
-	const UMovieSceneSequencePlayer& Player,
-	const FFrameTime CurrentTime,
-	const FFrameTime PreviousTime)
+void AEMSLevelSequenceActor::HandleSequenceLooped()
 {
-	if (bApplyingRestore
-		|| !Player.IsPlaying()
-		|| RuntimeRequestedLoopCount == 0)
+	if (bApplyingRestore)
 	{
 		return;
 	}
 
-	const FQualifiedFrameTime PlayerTime = Player.GetCurrentTime();
-	const FQualifiedFrameTime StartTime = Player.GetStartTime();
-	const FQualifiedFrameTime EndTime = Player.GetEndTime();
-	if (!PlayerTime.Rate.IsValid()
-		|| !StartTime.Rate.IsValid()
-		|| !EndTime.Rate.IsValid())
+	const UEMSLevelSequencePlayer* Player = Cast<UEMSLevelSequencePlayer>(GetPersistenceSequencePlayer());
+	if (!Player)
 	{
 		return;
 	}
 
-	const double CurrentDecimal = CurrentTime.AsDecimal();
-	const double PreviousDecimal = PreviousTime.AsDecimal();
-	const double StartDecimal = FFrameRate::TransformTime(
-		StartTime.Time,
-		StartTime.Rate,
-		PlayerTime.Rate).AsDecimal();
-	const double EndDecimal = FFrameRate::TransformTime(
-		EndTime.Time,
-		EndTime.Rate,
-		PlayerTime.Rate).AsDecimal();
-
-	if (!FMath::IsFinite(CurrentDecimal)
-		|| !FMath::IsFinite(PreviousDecimal)
-		|| !FMath::IsFinite(StartDecimal)
-		|| !FMath::IsFinite(EndDecimal)
-		|| EndDecimal <= StartDecimal
-		|| CurrentDecimal < StartDecimal
-		|| CurrentDecimal > EndDecimal
-		|| PreviousDecimal < StartDecimal
-		|| PreviousDecimal > EndDecimal)
-	{
-		return;
-	}
-
-	const bool bMovedOppositeToPlayback = Player.IsReversed()
-		? CurrentDecimal > PreviousDecimal
-		: CurrentDecimal < PreviousDecimal;
-	if (!bMovedOppositeToPlayback)
-	{
-		return;
-	}
-
-	const double DirectDistance =
-		FMath::Abs(CurrentDecimal - PreviousDecimal);
-	const double WrappedDistance = Player.IsReversed()
-		? (PreviousDecimal - StartDecimal) + (EndDecimal - CurrentDecimal)
-		: (EndDecimal - PreviousDecimal) + (CurrentDecimal - StartDecimal);
-
-	if (WrappedDistance >= 0.0 && WrappedDistance < DirectDistance)
-	{
-		++RuntimeCompletedLoops;
-	}
+	// Evaluation ranges restart at the boundary when Sequencer loops, so their
+	// direction cannot identify a wrap. The native counter also handles reverse
+	// playback and several wraps in one update. Capture samples it too, covering
+	// saves raised during evaluation before OnLooped is dispatched.
+	const int32 NativeLoops = Player->GetCompletedLoopCount();
+	const int32 NewLoops = FMath::Max(0, NativeLoops - LastObservedNativeLoopCount);
+	RuntimeCompletedLoops = static_cast<int32>(FMath::Min<int64>(
+		TNumericLimits<int32>::Max(), static_cast<int64>(RuntimeCompletedLoops) + NewLoops));
+	LastObservedNativeLoopCount = NativeLoops;
 }
 
 void AEMSLevelSequenceActor::LogRestoreIssue(const FText& Reason) const

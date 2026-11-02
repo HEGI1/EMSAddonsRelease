@@ -7,6 +7,7 @@
 #include "EMSAddonsGeometry.h"
 #include "EMSAddonsHash.h"
 #include "Engine/Texture2D.h"
+#include "Engine/World.h"
 #include "UObject/ConstructorHelpers.h"
 #include "GeometryCollection/GeometryCollection.h"
 #include "GeometryCollection/GeometryCollectionObject.h"
@@ -146,7 +147,9 @@ int64 AEMSGeometryCollectionActor::ComputeCurrentHierarchyHash() const
 
 bool AEMSGeometryCollectionActor::CaptureGeometryCollectionState()
 {
-	if (IsGeometryRestorePending())
+	// While a restore is pending, or after one timed out before applying, the
+	// live collection is not the state this actor is meant to save.
+	if (IsGeometryRestorePending() || bPreserveUnrestoredState)
 	{
 		return false;
 	}
@@ -418,6 +421,10 @@ void AEMSGeometryCollectionActor::RefreshGeometryRendering()
 
 bool AEMSGeometryCollectionActor::RestoreGeometryCollectionState()
 {
+	// A new restore decides afresh. If its state is incompatible, the live
+	// collection is the only usable state left and may be captured again.
+	bPreserveUnrestoredState = false;
+
 	FText Reason;
 	if (!ValidateStateInternal(Reason, false))
 	{
@@ -426,6 +433,7 @@ bool AEMSGeometryCollectionActor::RestoreGeometryCollectionState()
 	}
 
 	CancelPendingRestore(false);
+	RestoreStartSeconds = GetRestoreClockSeconds();
 	RestoreRetryCount = 0;
 	bGameThreadStateApplied = false;
 	RestorePhase = EEMSAddonRestorePhase::Pending;
@@ -503,16 +511,21 @@ void AEMSGeometryCollectionActor::MarkRestoreUnsafeAndFail(
 
 void AEMSGeometryCollectionActor::ScheduleRestoreRetry()
 {
-	if (++RestoreRetryCount > FMath::Max(1, MaxRestoreRetries))
+	// A timeout means the saved state never fully applied, so the live
+	// collection is not what this actor should save next.
+	++RestoreRetryCount;
+	if (RestoreRetryCount > FMath::Max(1, MaxRestoreRetries)
+		&& GetRestoreClockSeconds() - RestoreStartSeconds
+			>= FMath::Max(0.0f, RestoreTimeoutSeconds))
 	{
-		FailRestore(LOCTEXT("GeometryRestoreTimeout", "Geometry Collection restoration timed out while waiting for runtime resources."));
+		FailRestoreKeepingSavedState(LOCTEXT("GeometryRestoreTimeout", "Geometry Collection restoration timed out while waiting for runtime resources. The saved state is kept until a later restore."));
 		return;
 	}
 
 	UWorld* World = GetWorld();
 	if (!World)
 	{
-		FailRestore(LOCTEXT("GeometryRestoreNoWorld", "Geometry Collection restoration cannot retry without a valid world."));
+		FailRestoreKeepingSavedState(LOCTEXT("GeometryRestoreNoWorld", "Geometry Collection restoration cannot retry without a valid world. The saved state is kept until a later restore."));
 		return;
 	}
 
@@ -528,6 +541,12 @@ void AEMSGeometryCollectionActor::FinalizeRestore()
 	RefreshGeometryRendering();
 	RestorePhase = EEMSAddonRestorePhase::Complete;
 	LastRestoreResult = FEMSAddonResult::Success();
+}
+
+void AEMSGeometryCollectionActor::FailRestoreKeepingSavedState(const FText& Reason)
+{
+	bPreserveUnrestoredState = true;
+	FailRestore(Reason);
 }
 
 void AEMSGeometryCollectionActor::FailRestore(const FText& Reason)
@@ -687,6 +706,12 @@ bool AEMSGeometryCollectionActor::IsPhysicsRuntimeReadyForRestore() const
 		const_cast<AEMSGeometryCollectionActor*>(this);
 	return MutableThis->GeometryCollectionComponent->GetPhysicsProxy() != nullptr
 		&& MutableThis->GeometryCollectionComponent->GetInnerChaosScene() != nullptr;
+}
+
+double AEMSGeometryCollectionActor::GetRestoreClockSeconds() const
+{
+	const UWorld* World = GetWorld();
+	return World ? World->GetTimeSeconds() : 0.0;
 }
 
 FGeometryDynamicCollection*

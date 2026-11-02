@@ -78,14 +78,19 @@ public:
 		UStaticMesh* ReplacementMesh);
 
 protected:
-	virtual void CollectSources() override;
+	virtual void CollectSources(const ULevel* OnlyLevel) override;
+
+	virtual bool CanDiscoverSourcesInLevel(const ULevel* Level) const override
+	{
+		return IsLevelReadyForSourceDiscovery(Level);
+	}
 
 	/**
 	 * Whether a level is assembled enough to read its sources.
 	 *
-	 * Discovery runs for the whole world whenever any level finishes loading, so
-	 * a level that is still streaming in has to be skipped rather than cached as
-	 * an authored baseline in its partial state.
+	 * Initial discovery covers the loaded world. Subsequent streaming updates
+	 * discover arriving levels only, with a full-pass fallback if needed. A level
+	 * still streaming in must not be cached as a partial authored baseline.
 	 */
 	static bool IsLevelReadyForSourceDiscovery(const ULevel* Level);
 
@@ -103,8 +108,25 @@ private:
 	/** Registers every painted Static Mesh Foliage type the actor carries. */
 	void CollectFoliageSources(AInstancedFoliageActor* FoliageActor);
 
-	/** Recreates automatically generated replacement sources before discovery. */
-	void EnsureSavedReplacementSources();
+	/**
+	 * Recreates automatically generated replacement sources before discovery.
+	 *
+	 * With OnlyLevel, only templates owned by that level are resolved, which is
+	 * all a streaming arrival can have made available.
+	 */
+	void EnsureSavedReplacementSources(const ULevel* OnlyLevel);
+
+	/**
+	 * Actor-instance GUID index of the levels being discovered, valid only during
+	 * EnsureSavedReplacementSources. Without it every unresolved World Partition
+	 * descriptor walked every actor of every loaded level on each pass.
+	 */
+	const TMap<FGuid, AActor*>* ScopedOwnerIndex = nullptr;
+	/** Applies the same arrival scope to conventional path-based owners. */
+	const ULevel* ScopedReplacementLevel = nullptr;
+
+	/** Registers a generated replacement target without rediscovering the world. */
+	void RegisterReplacementTarget(UInstancedStaticMeshComponent* Component);
 
 	/** Resolves a currently loaded source owner from its stable identity. */
 	AActor* FindSourceOwner(const FEMSInstanceSourceId& SourceId) const;

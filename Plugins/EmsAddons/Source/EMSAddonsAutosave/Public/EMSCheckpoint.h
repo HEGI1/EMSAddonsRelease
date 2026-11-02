@@ -41,7 +41,10 @@ public:
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "EMS Addons|Autosave and Checkpoints|Identity")
 	FText DisplayName;
 
-	/** Automatically activates this checkpoint when the local player pawn genuinely enters the Trigger volume after startup/loading. */
+	/**
+	 * Automatically activates this checkpoint when a player's pawn genuinely enters the Trigger volume after
+	 * startup/loading. Any player-controlled pawn counts; activation itself only happens on the server.
+	 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "EMS Addons|Autosave and Checkpoints|Activation")
 	bool bActivateOnPlayerOverlap = true;
 
@@ -95,6 +98,8 @@ public:
 	bool IsPlayerPlacementPendingForTesting() const { return bRestorePlayerToCenterOnArm; }
 
 	bool PlaceRestoredPlayerForTesting(APawn* PlayerPawn) { return PlaceRestoredPlayer(PlayerPawn); }
+
+	bool IsActivatingActorForTesting(const AActor* Actor) const { return IsPlayerPawn(Actor); }
 #endif
 
 #if WITH_EDITOR
@@ -104,6 +109,7 @@ public:
 
 	virtual void PostEditChangeProperty(FPropertyChangedEvent& PropertyChangedEvent) override;
 	virtual void PostDuplicate(EDuplicateMode::Type DuplicateMode) override;
+	virtual void PostEditImport() override;
 #endif
 
 	virtual void PostActorCreated() override;
@@ -139,7 +145,9 @@ private:
 	/** Short-lived fallbacks used while EMS/player startup state is settling. */
 	bool bLoadWatchScheduled = false;
 	bool bArmWatchScheduled = false;
+	bool bWaitingForPlayerPawn = false;
 	FTimerHandle CheckpointMetadataWatchTimer;
+	FTimerHandle ArmWatchTimer;
 	ECollisionEnabled::Type SavedTriggerCollision = ECollisionEnabled::QueryOnly;
 
 	void EnsureCheckpointId();
@@ -151,6 +159,12 @@ private:
 	void RestoreTriggerCollision();
 	void ArmTriggerWhenPlayerReady();
 	bool PlaceRestoredPlayer(APawn* PlayerPawn);
+
+	/** Whether an actor is a pawn possessed by any player, local or remote. */
+	static bool IsPlayerPawn(const AActor* Actor);
+
+	/** The pawn of the player whose state EMS restores, which a load places here. */
+	APawn* GetRestoredPlayerPawn() const;
 	void ResolveArmWatch();
 	void RefreshTriggerCollisionFromSaveData(UEMSAutosaveSubsystem* Autosave);
 	void ScheduleLoadWatch();

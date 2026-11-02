@@ -46,6 +46,11 @@ bool AEMSInstanceManager::ReplaceInstanceWithSettings(
 		}
 	}
 
+	if (!CanMutateSourceState(SourceId))
+	{
+		return false;
+	}
+
 	FTransform ReplacementWorldTransform;
 	if (!Component->GetInstanceTransform(
 		InstanceIndex,
@@ -89,17 +94,20 @@ bool AEMSInstanceManager::ReplaceInstanceWithSettings(
 		return false;
 	}
 
-	// Discover a newly generated target while it is still empty so its authored
+	// Register a newly generated target while it is still empty so its authored
 	// baseline stays zero. The normal sparse delta then stores the transformed
-	// replacement exactly like any other runtime-added instance.
-	RefreshLoadedSources();
+	// replacement exactly like any other runtime-added instance. Only the target is
+	// registered: gameplay can replace many instances in one frame, and a
+	// whole-world rediscovery for each would be the dominant cost.
+	RegisterReplacementTarget(ReplacementComponent);
 
 	FEMSInstanceSourceId ReplacementSourceId;
 	if (!FindRegisteredSourceId(
 		ReplacementComponent,
 		ReplacementSourceId)
 		|| ReplacementComponent->NumCustomDataFloats !=
-			Component->NumCustomDataFloats)
+			Component->NumCustomDataFloats
+		|| !CanMutateSourceState(ReplacementSourceId))
 	{
 		return false;
 	}
@@ -134,8 +142,19 @@ bool AEMSInstanceManager::ReplaceInstanceWithSettings(
 		return false;
 	}
 
+	// The values move to the replacement. Instances are keyed by transform, so a
+	// copy left here would be inherited by the next instance added at this spot,
+	// such as a tree regrowing from its stump before the next save prunes it.
+	const bool bMovedGameplayData = bHasGameplayData
+		&& !GameplayData.IsEmpty()
+		&& ClearInstanceGameplayData(Component, InstanceIndex);
+
 	if (!Component->RemoveInstance(InstanceIndex))
 	{
+		if (bMovedGameplayData)
+		{
+			SetInstanceGameplayData(Component, InstanceIndex, GameplayData);
+		}
 		if (bHasGameplayData && !GameplayData.IsEmpty())
 		{
 			ClearInstanceGameplayData(
@@ -146,9 +165,9 @@ bool AEMSInstanceManager::ReplaceInstanceWithSettings(
 		return false;
 	}
 
-	// This source was created by gameplay, not by a streamed cell arriving. A
-	// later unrelated streaming event must not reconcile its previous saved
-	// target over the replacement that was just committed.
+	// Both sources now describe committed gameplay state. Any saved delta was
+	// already reconciled; newly created targets have no saved state to overwrite.
+	MarkSourceRestored(SourceId);
 	MarkSourceRestored(ReplacementSourceId);
 
 	OutReplacementComponent = ReplacementComponent;

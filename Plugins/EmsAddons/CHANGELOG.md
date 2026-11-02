@@ -1,5 +1,26 @@
 # Changelog
 
+## 1.1.0 - 2026-11-02
+
+### Improved
+
+- **Instanced Meshes and Foliage:** streamlined streaming discovery and replacement reconstruction to process arriving levels instead of rescanning the world. Unloaded sources release unused caches while modified baselines remain available for restoration.
+- **World Partition Runtime Actors:** improved dormant-actor recovery when generated cells change, reduced repeated work for unrestorable records, and hardened automatic manager and actor ownership cleanup.
+- **Level Sequence:** refined loop tracking for reverse playback and multiple wraps in one update. Restored runs honor their remaining repeats without changing the authored loop count for later playback.
+- **Autosave and Checkpoints:** checkpoints can activate for other players while the EMS-configured pawn is unavailable, while still suppressing startup overlaps and placing that pawn safely when it appears.
+
+### Fixed
+
+- **Instanced Meshes and Foliage:** preserved saved deltas across streaming arrival and next-tick reconciliation. Conflicting gameplay writes or replacements wait for affected sources and targets, and restore-status queries report `Pending` while queued work remains.
+- **Instanced Meshes and Foliage:** corrected gameplay-value association after external transform edits, duplicate-key changes, and instance replacement or regrowth. Incompatible saved deltas produce a warning when a later capture uses live state; unusually large instance scales no longer overflow identity keys.
+- **Actor Spawner and World Partition Runtime Actors:** restored actors reclaim stable names even before destroyed predecessors are garbage-collected. Actor Spawner also retains actors created by restore callbacks.
+- **World Partition Runtime Actors:** support detection includes level-owned collision, including BSP and character movement-base components without an actor owner, so actors are captured before their supporting cell disappears.
+- **Physics Streaming Guard:** recognizes BSP as support at startup and during level streaming, and ignores collision from departing levels when finding remaining support.
+- **Autosave and Checkpoints:** corrected paused-state restoration after canceled saves, checkpoint failure notifications, and clearing of superseded checkpoints during map-leave saves. Checkpoint activation supports any player's pawn and restores the EMS-selected pawn.
+- **Checkpoint and Actor Spawner identities:** **Move to Level** preserves persistent IDs; **Copy Actors to Level** and direct editor text imports generate new IDs.
+- **Level Sequence:** preserves playback direction for stopped and finished sequences without starting playback, and retains saved state when EMS or binding waits expire instead of reverting to autoplay.
+- **Geometry Collection:** restoration allows approximately five seconds of game time for Chaos readiness and retains saved data when restoration cannot complete.
+
 ## 1.0.0 - 2026-09-20
 
 ### Added

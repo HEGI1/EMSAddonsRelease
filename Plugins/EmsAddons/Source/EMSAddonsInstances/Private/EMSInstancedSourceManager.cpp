@@ -17,6 +17,7 @@
 #include "Engine/LevelStreaming.h"
 #include "Streaming/LevelStreamingDelegates.h"
 #include "EngineUtils.h"
+#include "Hash/xxhash.h"
 #include "ProfilingDebugging/CpuProfilerTrace.h"
 #include "TimerManager.h"
 #include "UObject/ConstructorHelpers.h"
@@ -29,11 +30,12 @@ namespace
 	/**
 	 * Whether two transforms describe the same stored instance.
 	 *
-	 * Instance transforms live in a float matrix, so a saved double transform
-	 * written back and read again is not bitwise identical, and the rotation is
-	 * re-derived from the matrix rather than round-tripped. The canonical key
-	 * quantizes that value, and any quantization has edges, so a drift far too
-	 * small to see can still land one step away and read as a different instance.
+	 * Added instances are saved as single-precision FTransform3f, and every
+	 * instance is stored as a matrix, so a saved transform written back and read
+	 * again is not bitwise identical, and the rotation is re-derived from the
+	 * matrix rather than round-tripped. The canonical key quantizes that value,
+	 * and any quantization has edges, so a drift far too small to see can still
+	 * land one step away and read as a different instance.
 	 *
 	 * The location tolerance therefore scales with distance from the origin,
 	 * because that is what float storage does: the representable step is about
@@ -169,6 +171,8 @@ void AEMSInstancedSourceManager::EndPlay(
 {
 	bIsEndingPlay = true;
 	bStreamingRestoreQueued = false;
+	ArrivedLevels.Reset();
+	ArrivedLevelWaitTicks = 0;
 	FLevelStreamingDelegates::OnLevelStreamingStateChanged.Remove(
 		StreamingStateChangedHandle);
 	FLevelStreamingDelegates::OnLevelBeginMakingInvisible.Remove(
@@ -354,6 +358,7 @@ bool AEMSInstancedSourceManager::IsStableSourceOwner(const AActor* SourceOwner)
 void AEMSInstancedSourceManager::MarkLoadedSourcesRestored()
 {
 	RestoredSources.Reset();
+	FailedRestoreSources.Reset();
 	for (const TPair<
 		FEMSInstanceSourceId,
 		TWeakObjectPtr<UInstancedStaticMeshComponent>>& Pair : LoadedSources)
@@ -371,10 +376,24 @@ void AEMSInstancedSourceManager::MarkSourceRestored(
 	}
 }
 
+bool AEMSInstancedSourceManager::CanMutateSourceState(
+	const FEMSInstanceSourceId& SourceId) const
+{
+	return !bRestorePending
+		&& (RestoredSources.Contains(SourceId)
+			|| FailedRestoreSources.Contains(SourceId)
+			|| !SavedDeltas.ContainsByPredicate(
+				[&SourceId](const FEMSInstanceSourceDelta& Delta)
+				{
+					return Delta.SourceId == SourceId;
+				}));
+}
+
 void AEMSInstancedSourceManager::ForgetSource(
 	const FEMSInstanceSourceId& SourceId)
 {
 	RestoredSources.Remove(SourceId);
+	FailedRestoreSources.Remove(SourceId);
 }
 
 AEMSInstancedSourceManager::FResolvedSourceState
@@ -536,6 +555,7 @@ void AEMSInstancedSourceManager::RefreshLoadedSources()
 	}
 
 	LastSourceRefreshFrame = GFrameCounter;
+	bHasDiscoveredWorld = true;
 
 	LoadedSources.Reset();
 	AmbiguousSources.Reset();
@@ -543,7 +563,7 @@ void AEMSInstancedSourceManager::RefreshLoadedSources()
 	InvalidateInstanceKeyCaches();
 
 	UnstableSourceOwners = 0;
-	CollectSources();
+	CollectSources(nullptr);
 	if (UnstableSourceOwners > 0)
 	{
 		UE_LOG(
@@ -579,7 +599,29 @@ void AEMSInstancedSourceManager::RefreshLoadedSources()
 			It.RemoveCurrent();
 		}
 	}
+	for (auto It = FailedRestoreSources.CreateIterator(); It; ++It)
+	{
+		const TWeakObjectPtr<UInstancedStaticMeshComponent>* Loaded =
+			LoadedSources.Find(*It);
+		if (!Loaded || !Loaded->IsValid())
+		{
+			It.RemoveCurrent();
+		}
+	}
 
+	EnsureSourceBaselines();
+}
+
+void AEMSInstancedSourceManager::RegisterDiscoveredSource(
+	const FEMSInstanceSourceId& SourceId,
+	UInstancedStaticMeshComponent* Component)
+{
+	RegisterSource(SourceId, Component);
+	EnsureSourceBaselines();
+}
+
+void AEMSInstancedSourceManager::EnsureSourceBaselines()
+{
 	for (const TPair<
 		FEMSInstanceSourceId,
 		TWeakObjectPtr<UInstancedStaticMeshComponent>>& Pair : LoadedSources)
@@ -587,8 +629,8 @@ void AEMSInstancedSourceManager::RefreshLoadedSources()
 		// The authored baseline is read once, when the source first appears. A
 		// changed source keeps it while streamed out because World Partition may
 		// only hide the same runtime component rather than reload authored content.
-		// Unloaded unchanged sources are pruned above because recapturing their
-		// authored state is safe.
+		// Unloaded unchanged sources are pruned on departure or full refresh
+		// because recapturing their authored state is safe.
 		//
 		// It must never be re-read merely because the component object changed. A
 		// foliage component is replaced whenever its instance set changes, so a
@@ -735,6 +777,8 @@ bool AEMSInstancedSourceManager::CaptureDeltas(const ULevel* OnlyLevel)
 	}
 
 	int64 TotalChanges = 0;
+	TArray<FEMSInstanceSourceId> CapturedSources;
+	TArray<FEMSInstanceSourceId> ReplacedRejectedSources;
 	for (const TPair<
 		FEMSInstanceSourceId,
 		TWeakObjectPtr<UInstancedStaticMeshComponent>>& Pair : LoadedSources)
@@ -748,6 +792,26 @@ bool AEMSInstancedSourceManager::CaptureDeltas(const ULevel* OnlyLevel)
 			{
 				continue;
 			}
+		}
+
+		// A source that streamed in is reconciled a tick later. Until then it
+		// still shows authored content, and diffing that against the baseline
+		// finds no change and deletes the saved delta the restore is about to
+		// apply. Its saved delta is the correct persisted state, so it is kept.
+		// A delta the restore rejected can never apply, so that source is
+		// captured instead, and the replacement is reported once it commits.
+		const bool bRejectedRestore = FailedRestoreSources.Contains(Pair.Key);
+		if (!RestoredSources.Contains(Pair.Key)
+			&& MergedDeltas.Contains(Pair.Key)
+			&& !bRejectedRestore)
+		{
+			UE_LOG(
+				LogEMSAddonsInstances,
+				Verbose,
+				TEXT("EMS instanced source has not been restored yet; its saved delta is kept. Manager=%s Source=%s"),
+				*GetPathName(),
+				*Pair.Key.ToString());
+			continue;
 		}
 
 		if (!Baseline
@@ -807,6 +871,10 @@ bool AEMSInstancedSourceManager::CaptureDeltas(const ULevel* OnlyLevel)
 		}
 		TotalChanges += SourceChanges;
 
+		if (bRejectedRestore && MergedDeltas.Contains(Pair.Key))
+		{
+			ReplacedRejectedSources.Add(Pair.Key);
+		}
 		if (Delta.IsEmpty())
 		{
 			MergedDeltas.Remove(Pair.Key);
@@ -815,6 +883,7 @@ bool AEMSInstancedSourceManager::CaptureDeltas(const ULevel* OnlyLevel)
 		{
 			MergedDeltas.Add(Pair.Key, MoveTemp(Delta));
 		}
+		CapturedSources.Add(Pair.Key);
 	}
 
 	if (MergedDeltas.Num() > MaxSourceDeltas)
@@ -881,6 +950,24 @@ bool AEMSInstancedSourceManager::CaptureDeltas(const ULevel* OnlyLevel)
 			return Left.SourceId.ToString() < Right.SourceId.ToString();
 		});
 	SavedDeltas = MoveTemp(NewDeltas);
+
+	// A captured source now matches what the save holds, so it is settled: a
+	// streaming restore queued for it must not reconcile it back to an older
+	// target, and later captures no longer have anything to protect.
+	for (const FEMSInstanceSourceId& SourceId : CapturedSources)
+	{
+		RestoredSources.Add(SourceId);
+		FailedRestoreSources.Remove(SourceId);
+	}
+	for (const FEMSInstanceSourceId& SourceId : ReplacedRejectedSources)
+	{
+		UE_LOG(
+			LogEMSAddonsInstances,
+			Warning,
+			TEXT("EMS instanced source's saved delta could not be restored and is replaced by its current state. Manager=%s Source=%s"),
+			*GetPathName(),
+			*SourceId.ToString());
+	}
 
 	// One summary line in addition to the per-source warnings, because a partial
 	// capture is otherwise only visible by noticing individual entries in a log
@@ -1197,9 +1284,10 @@ bool AEMSInstancedSourceManager::ReconcileSource(
 	}
 	// Verification asks whether the component accepted the mutations, not whether
 	// it stored them bit-for-bit. An instanced component keeps transforms as a
-	// float matrix, so writing a saved transform back and reading it returns a
-	// value that differs in the last bits, and the quaternion is re-derived from
-	// the matrix rather than round-tripped. Canonical rotation is quantized at
+	// matrix, and saved additions come from FTransform3f, so writing a saved
+	// transform back and reading it returns a value that differs in the last
+	// bits, and the quaternion is re-derived from the matrix rather than
+	// round-tripped. Canonical rotation is quantized at
 	// 1e-6, which that error can straddle: the transform is unchanged to well
 	// under a thousandth of a unit while its key lands one step away. Comparing
 	// keys alone therefore reported a perfectly restored source as skipped.
@@ -1376,7 +1464,7 @@ void AEMSInstancedSourceManager::RebuildGameplayData(
 	}
 }
 
-void AEMSInstancedSourceManager::RestoreLoadedSources()
+void AEMSInstancedSourceManager::RestoreLoadedSources(const bool bRediscoverWorld)
 {
 	TRACE_CPUPROFILER_EVENT_SCOPE(EMSAddons_RestoreInstancedSources);
 	if (!bIsActiveManager || bIsEndingPlay)
@@ -1404,7 +1492,10 @@ void AEMSInstancedSourceManager::RestoreLoadedSources()
 	}
 
 	bRestorePending = true;
-	RefreshLoadedSources();
+	if (bRediscoverWorld)
+	{
+		RefreshLoadedSources();
+	}
 	bool bHadSkippedSource = false;
 	int32 TotalChanges = 0;
 
@@ -1465,6 +1556,7 @@ void AEMSInstancedSourceManager::RestoreLoadedSources()
 					Delta->AddedInstances.Num());
 
 				bHadSkippedSource = true;
+				FailedRestoreSources.Add(Pair.Key);
 				LogSourceIssue(
 					Pair.Key,
 					FText::Format(
@@ -1478,10 +1570,12 @@ void AEMSInstancedSourceManager::RestoreLoadedSources()
 			if (ReconcileSource(Pair.Key, Delta, Component, *Baseline))
 			{
 				RestoredSources.Add(Pair.Key);
+				FailedRestoreSources.Remove(Pair.Key);
 			}
 			else
 			{
 				bHadSkippedSource = true;
+				FailedRestoreSources.Add(Pair.Key);
 			}
 		}
 	}
@@ -1508,18 +1602,38 @@ void AEMSInstancedSourceManager::RemoveSourcesInLevel(ULevel* Level)
 		return;
 	}
 
+	TSet<FEMSInstanceSourceId> ChangedSources;
+	for (const FEMSInstanceSourceDelta& Delta : SavedDeltas)
+	{
+		ChangedSources.Add(Delta.SourceId);
+	}
+
 	for (auto It = LoadedSources.CreateIterator(); It; ++It)
 	{
 		const UInstancedStaticMeshComponent* Component = It.Value().Get();
 		const AActor* SourceOwner = Component ? Component->GetOwner() : nullptr;
 		if (!SourceOwner || SourceOwner->GetLevel() == Level)
 		{
-			if (Component)
+			// An unchanged source can rebuild its authored baseline on arrival.
+			// Changed sources keep theirs: hide/show may reuse mutated components.
+			if (!ChangedSources.Contains(It.Key()))
 			{
-				SourceIdsByComponent.Remove(FObjectKey(Component));
+				SourceBaselines.Remove(It.Key());
 			}
 			ForgetSource(It.Key());
 			AmbiguousSources.Remove(It.Key());
+			It.RemoveCurrent();
+		}
+	}
+	// Use the reverse index so even a component that already became invalid can
+	// release its cached keys. Object keys survive GC; resolving the pointer to
+	// reconstruct its key would lose precisely those stale entries.
+	for (auto It = SourceIdsByComponent.CreateIterator(); It; ++It)
+	{
+		const TWeakObjectPtr<UInstancedStaticMeshComponent>* Loaded = LoadedSources.Find(It.Value());
+		if (!Loaded || !Loaded->IsValid() || FObjectKey(Loaded->Get()) != It.Key())
+		{
+			InstanceKeyCaches.Remove(It.Key());
 			It.RemoveCurrent();
 		}
 	}
@@ -1542,7 +1656,7 @@ void AEMSInstancedSourceManager::HandleLevelStreamingStateChanged(
 	// raised from inside Unreal's final visibility transition.
 	if (NewState == ELevelStreamingState::LoadedVisible)
 	{
-		QueueStreamingRestore();
+		QueueStreamingRestore(Level);
 		return;
 	}
 
@@ -1559,8 +1673,13 @@ void AEMSInstancedSourceManager::HandleLevelStreamingStateChanged(
 	}
 }
 
-void AEMSInstancedSourceManager::QueueStreamingRestore()
+void AEMSInstancedSourceManager::QueueStreamingRestore(ULevel* Level)
 {
+	if (Level)
+	{
+		ArrivedLevels.AddUnique(Level);
+	}
+
 	UWorld* World = GetWorld();
 	if (!World || bStreamingRestoreQueued)
 	{
@@ -1577,15 +1696,67 @@ void AEMSInstancedSourceManager::QueueStreamingRestore()
 			[this]()
 			{
 				bStreamingRestoreQueued = false;
-				if (bIsEndingPlay || bHandlingStreamingEvent)
-				{
-					return;
-				}
-
-				bHandlingStreamingEvent = true;
-				RestoreLoadedSources();
-				bHandlingStreamingEvent = false;
+				ProcessArrivedLevels();
 			}));
+}
+
+void AEMSInstancedSourceManager::ProcessArrivedLevels()
+{
+	if (bIsEndingPlay || bHandlingStreamingEvent)
+	{
+		ArrivedLevels.Reset();
+		ArrivedLevelWaitTicks = 0;
+		return;
+	}
+
+	// Only the arriving levels are discovered. A whole-world rediscovery per
+	// streamed cell walks every actor in every loaded level each time, which is
+	// what a large World Partition world cannot afford. Without an earlier full
+	// discovery there is nothing to extend, and a level that will not finish
+	// assembling falls back to one full pass rather than being lost.
+	constexpr int32 MaxArrivedLevelWaitTicks = 600;
+	bool bRediscoverWorld = !bHasDiscoveredWorld;
+	TArray<TWeakObjectPtr<ULevel>> StillAssembling;
+	if (!bRediscoverWorld)
+	{
+		for (const TWeakObjectPtr<ULevel>& WeakLevel : ArrivedLevels)
+		{
+			ULevel* Level = WeakLevel.Get();
+			if (!Level)
+			{
+				continue;
+			}
+			if (CanDiscoverSourcesInLevel(Level))
+			{
+				CollectSources(Level);
+			}
+			else if (Level->bIsVisible || Level->HasVisibilityChangeRequestPending())
+			{
+				StillAssembling.Add(Level);
+			}
+		}
+		EnsureSourceBaselines();
+
+		if (!StillAssembling.IsEmpty() && ++ArrivedLevelWaitTicks > MaxArrivedLevelWaitTicks)
+		{
+			bRediscoverWorld = true;
+			StillAssembling.Reset();
+		}
+	}
+	ArrivedLevels = MoveTemp(StillAssembling);
+	if (ArrivedLevels.IsEmpty())
+	{
+		ArrivedLevelWaitTicks = 0;
+	}
+
+	bHandlingStreamingEvent = true;
+	RestoreLoadedSources(bRediscoverWorld);
+	bHandlingStreamingEvent = false;
+
+	if (!ArrivedLevels.IsEmpty())
+	{
+		QueueStreamingRestore(nullptr);
+	}
 }
 
 void AEMSInstancedSourceManager::HandleLevelBeginMakingInvisible(
@@ -1607,11 +1778,22 @@ void AEMSInstancedSourceManager::HandleLevelBeginMakingInvisible(
 
 bool AEMSInstancedSourceManager::IsInstancedRestorePending() const
 {
-	return bRestorePending;
+	return bRestorePending || bStreamingRestoreQueued || !ArrivedLevels.IsEmpty();
 }
 
 FEMSAddonResult AEMSInstancedSourceManager::GetInstancedRestoreResult() const
 {
+	// Streaming arrivals are queued after a previous restore may have completed.
+	// Expose the in-flight state without overwriting that completed result.
+	if (IsInstancedRestorePending()
+		&& LastRestoreResult.Code != EEMSAddonResultCode::Pending)
+	{
+		return FEMSAddonResult(
+			EEMSAddonResultCode::Pending,
+			LOCTEXT(
+				"InstancedStreamingRestorePending",
+				"Waiting for instanced source streaming reconciliation."));
+	}
 	return LastRestoreResult;
 }
 
@@ -1634,6 +1816,7 @@ void AEMSInstancedSourceManager::ActorPreSave_Implementation()
 void AEMSInstancedSourceManager::ActorPreLoad_Implementation()
 {
 	RestoredSources.Reset();
+	FailedRestoreSources.Reset();
 	LiveGameplayData.Reset();
 	bHadSkippedRestoreSource = false;
 	bRestorePending = true;
@@ -1651,13 +1834,13 @@ void AEMSInstancedSourceManager::ActorLoaded_Implementation()
 
 bool AEMSInstancedSourceManager::IsEMSAddonRestoreComplete() const
 {
-	return !bRestorePending;
+	return !IsInstancedRestorePending();
 }
 
 FEMSAddonResult
 AEMSInstancedSourceManager::GetEMSAddonRestoreResult() const
 {
-	return LastRestoreResult;
+	return GetInstancedRestoreResult();
 }
 
 AEMSInstancedSourceManager*
@@ -1708,9 +1891,21 @@ AEMSInstancedSourceManager::GetInstanceKeyCache(
 
 	const FObjectKey ComponentKey(Component);
 	const int32 InstanceCount = Component->GetInstanceCount();
+	// ISM/HISM exposes no transform-change revision. Hash the complete layout:
+	// another instance can change this one's duplicate ordinal without changing
+	// its transform or the count. Unchanged lookups avoid decomposition/sorting.
+	const uint64 LayoutHash = FXxHash64::HashBuffer(
+		Component->PerInstanceSMData.GetData(),
+		static_cast<uint64>(Component->PerInstanceSMData.Num())
+			* sizeof(FInstancedStaticMeshInstanceData)).Hash;
+	const FTransform ComponentTransform = bWorldSpace
+		? Component->GetComponentTransform()
+		: FTransform::Identity;
 	if (const FInstanceKeyCache* Cached = InstanceKeyCaches.Find(ComponentKey);
 		Cached
 		&& Cached->InstanceCount == InstanceCount
+		&& Cached->LayoutHash == LayoutHash
+		&& Cached->ComponentTransform.Equals(ComponentTransform, 0.0)
 		&& Cached->CanonicalByRuntimeIndex.IsValidIndex(QueriedInstanceIndex)
 		&& Cached->CanonicalByRuntimeIndex[QueriedInstanceIndex] == QueriedCanonical)
 	{
@@ -1719,6 +1914,8 @@ AEMSInstancedSourceManager::GetInstanceKeyCache(
 
 	FInstanceKeyCache Rebuilt;
 	Rebuilt.InstanceCount = InstanceCount;
+	Rebuilt.LayoutHash = LayoutHash;
+	Rebuilt.ComponentTransform = ComponentTransform;
 	Rebuilt.CanonicalByRuntimeIndex.SetNum(InstanceCount);
 	Rebuilt.KeysByRuntimeIndex.SetNum(InstanceCount);
 
@@ -1892,6 +2089,11 @@ bool AEMSInstancedSourceManager::WriteInstanceGameplayData(
 		}
 	}
 
+	if (!CanMutateSourceState(SourceId))
+	{
+		return false;
+	}
+
 	TMap<FEMSInstanceKey, FEMSInstanceGameplayData>* SourceGameplayData =
 		LiveGameplayData.Find(SourceId);
 	FEMSInstanceGameplayData Candidate;
@@ -1919,10 +2121,12 @@ bool AEMSInstancedSourceManager::WriteInstanceGameplayData(
 				LiveGameplayData.Remove(SourceId);
 			}
 		}
+		MarkSourceRestored(SourceId);
 		return true;
 	}
 
 	LiveGameplayData.FindOrAdd(SourceId).Add(Key, MoveTemp(Candidate));
+	MarkSourceRestored(SourceId);
 	return true;
 }
 

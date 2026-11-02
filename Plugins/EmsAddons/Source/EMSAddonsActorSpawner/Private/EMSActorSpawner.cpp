@@ -6,6 +6,8 @@
 #include "Components/SceneComponent.h"
 #include "EMSAddonsActorSpawner.h"
 #include "EMSAddonsActorBinary.h"
+#include "EMSAddonsActorNames.h"
+#include "EMSAddonsEditorIdentity.h"
 #include "EMSAddonsGameThread.h"
 #include "EMSActors.h"
 #include "EMSData.h"
@@ -172,7 +174,17 @@ void AEMSActorSpawner::RemoveActorDestroyedHandler()
 void AEMSActorSpawner::PostDuplicate(const bool bDuplicateForPIE)
 {
 	Super::PostDuplicate(bDuplicateForPIE);
-	if (!bDuplicateForPIE && !HasAnyFlags(RF_ClassDefaultObject))
+	if (!bDuplicateForPIE
+		&& EMSAddons::ShouldRegenerateImportedIdentity(this, &AEMSActorSpawner::SpawnerId))
+	{
+		SpawnerId = FGuid::NewGuid();
+	}
+}
+
+void AEMSActorSpawner::PostEditImport()
+{
+	Super::PostEditImport();
+	if (EMSAddons::ShouldRegenerateImportedIdentity(this, &AEMSActorSpawner::SpawnerId))
 	{
 		SpawnerId = FGuid::NewGuid();
 	}
@@ -454,7 +466,19 @@ AActor* AEMSActorSpawner::SpawnActorForRecord(FEMSSpawnedActorRecord Record, boo
 		return nullptr;
 	}
 
+	// A destroyed actor keeps its name until garbage collection, so a load that
+	// brings its record back before then would otherwise fail to respawn it.
 	const FName StableName = MakeStableActorName(Record.LocalId);
+	if (!EMSAddons::ReleaseDestroyedActorName(TargetLevel, StableName))
+	{
+		UE_LOG(
+			LogEMSAddonsActorSpawner,
+			Warning,
+			TEXT("Another object occupies a spawned actor's stable name; the record is retained. Spawner=%s Name=%s"),
+			*GetPathName(),
+			*StableName.ToString());
+		return nullptr;
+	}
 	FActorSpawnParameters SpawnParameters;
 	SpawnParameters.OverrideLevel = TargetLevel;
 	SpawnParameters.Name = StableName;
@@ -1118,15 +1142,29 @@ void AEMSActorSpawner::RestoreSpawnedActors()
 	LastRestoreResult = FEMSAddonResult(
 		EEMSAddonResultCode::Pending,
 		LOCTEXT("SpawnerRestoreStarted", "Actor spawner restoration started."));
+	RebuildLiveBindings();
+	// Only actors present at the start of this restore are candidates for
+	// removal. Construction, BeginPlay and restore callbacks can spawn new
+	// actors, and those are gameplay changes rather than stale saved actors.
+	TMap<FGuid, TWeakObjectPtr<AActor>> PreviousLiveActors;
+	for (const TPair<FGuid, TObjectPtr<AActor>>& Pair : LiveActorsById)
+	{
+		PreviousLiveActors.Add(Pair.Key, Pair.Value.Get());
+	}
+	TArray<FGuid> RestoreIds;
+	RestoreIds.Reserve(SpawnedActorManifest.Num());
+	for (const FEMSSpawnedActorRecord& Record : SpawnedActorManifest)
+	{
+		RestoreIds.Add(Record.LocalId);
+	}
 	OnRestoreStarted.Broadcast();
 
-	RebuildLiveBindings();
 	TSet<FGuid> DesiredIds;
 	TSet<FGuid> DuplicateIds;
 	TSet<FGuid> StateLoadEligibleIds;
 	TSet<FGuid> DeferredRestoreIds;
-	const int32 ProcessCount = FMath::Min(SpawnedActorManifest.Num(), FMath::Max(1, MaxSpawnedActors));
-	if (ProcessCount < SpawnedActorManifest.Num())
+	const int32 ProcessCount = FMath::Min(RestoreIds.Num(), FMath::Max(1, MaxSpawnedActors));
+	if (ProcessCount < RestoreIds.Num())
 	{
 		// The records past the limit are kept, just not restored, so this is a
 		// skip rather than a failure and nothing is lost from the manifest.
@@ -1137,13 +1175,13 @@ void AEMSActorSpawner::RestoreSpawnedActors()
 			TEXT("Spawn record processing was limited to %d records. Remaining records were retained. Spawner=%s Records=%d"),
 			ProcessCount,
 			*GetPathName(),
-			SpawnedActorManifest.Num());
+			RestoreIds.Num());
 	}
 
 	TSet<FGuid> SeenIds;
 	for (int32 Index = 0; Index < ProcessCount; ++Index)
 	{
-		const FGuid& LocalId = SpawnedActorManifest[Index].LocalId;
+		const FGuid& LocalId = RestoreIds[Index];
 		if (LocalId.IsValid() && SeenIds.Contains(LocalId))
 		{
 			DuplicateIds.Add(LocalId);
@@ -1153,13 +1191,14 @@ void AEMSActorSpawner::RestoreSpawnedActors()
 
 	for (int32 Index = 0; Index < ProcessCount; ++Index)
 	{
-		// Copied, and the count re-checked, because spawning below runs user
-		// construction and Begin Play, which can grow or prune the manifest.
-		if (!SpawnedActorManifest.IsValidIndex(Index))
+		// Look up the original ID again: callbacks may have pruned or changed
+		// its record, and newly appended records are not part of this restore.
+		const FEMSSpawnedActorRecord* CurrentRecord = FindRecord(RestoreIds[Index]);
+		if (!CurrentRecord)
 		{
-			break;
+			continue;
 		}
-		const FEMSSpawnedActorRecord Record = SpawnedActorManifest[Index];
+		const FEMSSpawnedActorRecord Record = *CurrentRecord;
 		FText ValidationReason;
 		const bool bIsValidRecord = IsRecordValid(Record, ValidationReason);
 		if (!bIsValidRecord || DuplicateIds.Contains(Record.LocalId))
@@ -1223,30 +1262,34 @@ void AEMSActorSpawner::RestoreSpawnedActors()
 		}
 	}
 
-	TArray<FGuid> LiveIds;
-	LiveActorsById.GetKeys(LiveIds);
-	for (const FGuid& LiveId : LiveIds)
+	for (const TPair<FGuid, TWeakObjectPtr<AActor>>& Pair : PreviousLiveActors)
 	{
-		if (!DesiredIds.Contains(LiveId))
+		if (!DesiredIds.Contains(Pair.Key)
+			&& Pair.Value.IsValid()
+			&& GetSpawnedActor(FEMSSpawnedActorId(Pair.Key)) == Pair.Value.Get())
 		{
 			bRestoreHadFailure |= !DestroyLiveActor(
-				LiveId,
+				Pair.Key,
 				EEMSSpawnerDestructionContext::Internal,
 				false);
 		}
 	}
 
-	// Indexed and copied for the same reason as the loop above: Load Actor State
-	// fires the actor's own EMS Actor Loaded, which can spawn through this spawner
-	// and move the manifest's elements. Consuming the eligibility set instead of
-	// testing it also keeps an element shift from loading one record twice.
-	for (int32 Index = 0; Index < SpawnedActorManifest.Num(); ++Index)
+	// Loading can also mutate the manifest; visit the original IDs and copy the
+	// current record each time, without loading newly spawned actors as saved data.
+	for (int32 Index = 0; Index < ProcessCount; ++Index)
 	{
-		const FEMSSpawnedActorRecord Record = SpawnedActorManifest[Index];
-		if (StateLoadEligibleIds.Remove(Record.LocalId) == 0)
+		const FGuid LocalId = RestoreIds[Index];
+		if (StateLoadEligibleIds.Remove(LocalId) == 0)
 		{
 			continue;
 		}
+		const FEMSSpawnedActorRecord* CurrentRecord = FindRecord(LocalId);
+		if (!CurrentRecord || !CurrentRecord->bExists)
+		{
+			continue;
+		}
+		const FEMSSpawnedActorRecord Record = *CurrentRecord;
 		const bool bDeferredRestore = DeferredRestoreIds.Remove(Record.LocalId) > 0;
 		AActor* Actor = GetSpawnedActor(FEMSSpawnedActorId(Record.LocalId));
 		if (!Actor)

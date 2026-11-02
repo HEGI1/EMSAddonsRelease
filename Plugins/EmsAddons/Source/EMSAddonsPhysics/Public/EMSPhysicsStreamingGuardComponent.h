@@ -24,8 +24,8 @@ enum class ELevelStreamingState : uint8;
  * invisible, or when nothing at all is loaded below the owner at Begin Play in a
  * world that actually streams (World Partition streaming or a conventional
  * streamed sublevel) - a static world has nothing to explain missing support
- * with, so it never runs that startup check. It resumes as soon as a level
- * becomes visible again and something is back under the owner. Ordinary
+ * with, so it never runs that startup check. Streaming events resume it when
+ * usable support is back below the owner, ignoring departing collision. Ordinary
  * gameplay - debris falling into a pit, an object knocked off a ledge - never
  * reaches either condition.
  *
@@ -90,12 +90,14 @@ private:
 	};
 
 	TArray<FEMSSuspendedBody> SuspendedBodies;
+	/** Collision can remain registered after a level announces its departure. */
+	TSet<TWeakObjectPtr<ULevel>> DepartingLevels;
 	FDelegateHandle BeginInvisibleHandle;
 	FDelegateHandle StateChangedHandle;
 	FTimerHandle InitialEvaluationTimer;
 	bool bSuspended = false;
 
-	bool TraceBelowOwner(double Reach, FHitResult& OutHit) const;
+	bool TraceBelowOwner(double Reach, FHitResult& OutHit, bool bIgnoreDepartingLevels = false) const;
 
 	void HandleLevelBeginMakingInvisible(
 		UWorld* InWorld,

@@ -114,6 +114,17 @@ protected:
 	virtual bool IsRelevantEMSLoadActive() const;
 	void InitializeAutoPlayGateForBeginPlay();
 	void HandleInitialAutoPlay();
+	void AttemptRestore();
+
+	/**
+	 * The clock every deferred wait in this class is measured against.
+	 *
+	 * World time rather than wall clock, because the waits retry on tick timers
+	 * and both stop together when the game is paused. Wall clock would keep
+	 * burning the budget while nothing could make progress. Virtual so
+	 * automation can expire a wait in an editor world, whose time never moves.
+	 */
+	virtual double GetDeferralClockSeconds() const;
 
 private:
 	/**
@@ -145,6 +156,7 @@ private:
 	double InitialAutoPlayStartSeconds = 0.0;
 	int32 RuntimeRequestedLoopCount = 0;
 	int32 RuntimeCompletedLoops = 0;
+	int32 LastObservedNativeLoopCount = 0;
 	bool bRuntimeHasStarted = false;
 	bool bRuntimeFinished = false;
 	bool bRuntimePlaybackActive = false;
@@ -159,14 +171,15 @@ private:
 	bool bIsEndingPlay = false;
 
 	/**
-	 * The clock every deferred wait in this class is measured against.
+	 * Set when a restore timed out without a usable player.
 	 *
-	 * World time rather than wall clock, because the waits retry on tick timers
-	 * and both stop together when the game is paused. Wall clock would keep
-	 * burning the budget while nothing could make progress.
+	 * The fallback autoplay then runs from authored settings, and capturing it
+	 * would overwrite the saved progress that never got the chance to apply.
+	 * Capture keeps PersistedState until a later restore begins.
 	 */
-	double GetDeferralClockSeconds() const;
+	bool bPreserveUnrestoredState = false;
 
+	bool HasRestoreWaitExpired() const;
 	void SkipPersistenceWithoutAuthority();
 	bool CanAccessLevelSequence(FText& OutReason, bool bRequirePlayer) const;
 	bool ValidateStateInternal(FText& OutReason, bool bRequirePlayer) const;
@@ -174,7 +187,6 @@ private:
 	bool AreRootPossessableBindingsReady() const;
 	void QueueRestoreForEMSCompletion();
 	void StartDeferredRestore();
-	void AttemptRestore();
 	void ScheduleRestoreRetry();
 	void FinalizeRestore();
 	void FailRestore(const FText& Reason);
@@ -208,8 +220,5 @@ private:
 	UFUNCTION()
 	void HandleSequenceFinished();
 
-	void HandleSequenceUpdated(
-		const UMovieSceneSequencePlayer& Player,
-		FFrameTime CurrentTime,
-		FFrameTime PreviousTime);
+	void HandleSequenceLooped();
 };

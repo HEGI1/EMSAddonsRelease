@@ -19,21 +19,24 @@ After EMS restores the saved state, the player is placed at the **center of the 
 
 Checkpoint loading can travel to another map. In streamed levels and World Partition, placement waits for the matching checkpoint to stream in when necessary.
 
+Checkpoint IDs are generated automatically. Editor copy/paste, **Copy Actors to Level** and ordinary duplication assign a new ID to the copy; **Move to Level** and PIE preserve the authored ID. Use **Regenerate Checkpoint ID** only when intentionally repairing an existing duplicate. Changing an established checkpoint's ID changes which saved checkpoint destination it matches.
+
 ### Checkpoint options
 
-- **Activate On Player Overlap** — activates when the player enters the Trigger.
+- **Activate On Player Overlap** — activates when any player's pawn enters the Trigger. Activation runs on the server; with several players, the checkpoint saves whatever EMS is configured to save. After **Load Last Checkpoint**, the player that EMS restores (its configured player controller) is the one placed at the checkpoint.
 - **Trigger Once** — allows one activation until reset. The activation flag participates in normal EMS saves and loads. Disable for repeatable checkpoints. **Activate Checkpoint** returns false when the committed checkpoint already matches, so a checkpoint rebuilt by a respawn or a streamed-level reload does not report a second activation.
 - **Display Name** — optional saved checkpoint name.
 
 Use **Reset Checkpoint** to clear the checkpoint actor's session activation state.
 
 Startup and load-generated overlaps are ignored, so restoring inside a checkpoint does not immediately save again.
+After the initial overlap-settling tick, other players can activate even while EMS's configured controller has no pawn. Its late-spawned pawn still settles its startup overlap and any pending checkpoint placement before it can activate the trigger.
 
 ## Autosaves
 
 Call **Request Autosave** whenever gameplay should request a normal EMS save.
 
-Requests are combined while EMS is busy, streaming is not ready, a blocker is active, or the minimum save interval has not passed.
+Requests are combined while an EMS save is busy, streaming is not ready, a blocker is active, or the minimum save interval has not passed. **Request Autosave** returns false during an active EMS load; previously queued requests are canceled when loading begins, so no pending autosave carries across a restore.
 
 Optional automatic triggers:
 
@@ -86,6 +89,8 @@ Saving can continue after the final blocker is removed.
 - **Is Autosave Blocked**
 - **Set Periodic Autosave Interval**
 - **Get Periodic Autosave Interval**
+- **Was Activated This Session** (EMS Checkpoint actor) — reads the checkpoint's saved activation state.
+- **Is Activation Pending** (EMS Checkpoint actor) — checks whether its activation is awaiting save completion.
 
 ## Events
 

@@ -20,7 +20,8 @@ Use the EMS Geometry Collection Actor as the target.
 
 ## Important behavior
 
-- Saved data is expected to match the same Geometry Collection asset and hierarchy.
+- By default, restoration requires the same Geometry Collection asset and hierarchy. **Asset Mismatch Policy → Allow If Hierarchy Matches** permits a different Rest Collection only when its hierarchy and authored transforms still match the saved state.
 - Restoration may defer until the Chaos runtime and physics proxy are ready. A save during that short pending phase keeps the loaded Geometry state intact until restoration finishes.
+- Restoration waits up to about five seconds of game time for those resources. If they never appear, the restore fails and the saved Geometry state is kept, not overwritten by the unrestored collection. It stays kept until the next restore, normally the next load.
 - The addon persists fracture hierarchy and piece transforms. Chaos removal and decay lifecycle state is outside the persistence scope.
 - Capture and restore are server-authoritative. Replication remains the project's responsibility.

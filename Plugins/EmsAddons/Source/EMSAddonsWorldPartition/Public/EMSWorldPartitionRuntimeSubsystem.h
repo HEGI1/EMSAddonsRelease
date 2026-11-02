@@ -57,6 +57,7 @@ public:
 	void SetDestroyFailureForTesting(bool bFail) { bForceDestroyFailureForTests = bFail; }
 	void SetCellValidationBypassForTesting(bool bBypass) { bBypassCellValidationForTests = bBypass; }
 	bool DestroyManagedActorForTesting(const AActor* Actor);
+	static bool IsActorSupportedByLevelForTesting(UWorld* World, AActor* Actor, const ULevel* Level);
 
 	/** Whether the manager's last capture entry point reached this on the game thread. */
 	bool WasLastManagerPreSaveOnGameThread() const { return bLastManagerPreSaveOnGameThread; }
@@ -73,6 +74,25 @@ private:
 	FDelegateHandle StateChangedHandle;
 	FTimerHandle ReconcileTimerHandle;
 	TWeakObjectPtr<UEMSObject> BoundEMSObject;
+
+	/**
+	 * Every runtime cell GUID the world's streaming hash generated, read once.
+	 *
+	 * A dormant record waits for its supporting cell to become visible again. If
+	 * a content update regenerated the grid so that cell no longer exists, the
+	 * record would wait forever, so a requirement naming an unknown cell is
+	 * dropped and only location coverage decides.
+	 */
+	TSet<FGuid> RuntimeCellGuids;
+	bool bRuntimeCellGuidsBuilt = false;
+
+	/**
+	 * Records that can never be restored as they are, such as a removed class or
+	 * a corrupt binary. Reported once and skipped until the next load replaces
+	 * the records, instead of being revalidated - with a synchronous class load
+	 * and a full binary decode - on every reconcile.
+	 */
+	TSet<FGuid> RejectedRecordIds;
 
 	/**
 	 * True while the subsystem is itself removing a managed actor.
@@ -120,6 +140,7 @@ private:
 	struct FEMSWorldPartitionRuntimeActorRecord* FindRecordMutable(const FGuid& LocalId);
 	const struct FEMSWorldPartitionRuntimeActorRecord* FindRecord(const FGuid& LocalId) const;
 	bool ValidateRecord(const struct FEMSWorldPartitionRuntimeActorRecord& Record, UClass*& OutClass) const;
+	bool DoesRuntimeCellExist(const FGuid& CellGuid);
 
 	const UWorldPartitionRuntimeLevelStreamingCell* GetCellFromStreamingLevel(const ULevelStreaming* StreamingLevel) const;
 	void HandleLevelBeginMakingInvisible(UWorld* InWorld, const ULevelStreaming* StreamingLevel, ULevel* LoadedLevel);
