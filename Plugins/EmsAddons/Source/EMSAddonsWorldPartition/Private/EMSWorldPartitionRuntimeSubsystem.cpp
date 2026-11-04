@@ -11,6 +11,8 @@
 #include "EMSObject.h"
 #include "EMSTypes.h"
 #include "EMSWorldPartitionCellResolver.h"
+#include "EMSWorldPartitionActorSupport.h"
+#include "EMSWorldPartitionPlacedComponent.h"
 #include "EMSWorldPartitionRuntimeManager.h"
 #include "EMSWorldPartitionRuntimeTypes.h"
 #include "Engine/Level.h"
@@ -21,6 +23,7 @@
 #include "GameFramework/Pawn.h"
 #include "Streaming/LevelStreamingDelegates.h"
 #include "TimerManager.h"
+#include "UObject/StrongObjectPtr.h"
 #include "WorldPartition/WorldPartition.h"
 #include "WorldPartition/WorldPartitionLevelStreamingDynamic.h"
 #include "WorldPartition/WorldPartitionRuntimeCell.h"
@@ -70,68 +73,13 @@ namespace
 		return false;
 	}
 
-	bool IsActorSupportedByLevel(UWorld* World, AActor* Actor, const ULevel* Level)
-	{
-		if (!IsValid(World) || !IsValid(Actor) || !IsValid(Level))
-		{
-			return false;
-		}
 
-		//A Pawn riding a moving base (lift, vehicle) is supported by that base's Level.
-		if (const APawn* Pawn = Cast<APawn>(Actor))
-		{
-			if (const AActor* BaseActor = APawn::GetMovementBaseActor(Pawn))
-			{
-				if (BaseActor->GetLevel() == Level)
-				{
-					return true;
-				}
-			}
-			else if (const UPrimitiveComponent* BaseComponent =
-				Cast<UPrimitiveComponent>(Pawn->GetMovementBaseObject()))
-			{
-				// Level-owned collision has no base actor (for example a model
-				// component). Its level still supplies the character's support.
-				if (BaseComponent->GetComponentLevel() == Level)
-				{
-					return true;
-				}
-			}
-		}
-
-		const UPrimitiveComponent* RootPrimitive = Cast<UPrimitiveComponent>(Actor->GetRootComponent());
-		if (!RootPrimitive || !RootPrimitive->IsSimulatingPhysics())
-		{
-			return false;
-		}
-
-		//Otherwise, trace a short distance below the bounds for resting contact: 2 units of
-		//overlap tolerance plus 20 units of reach, enough to catch normal physics settling
-		//jitter without reaching far enough to hit unrelated geometry below a gap.
-		FVector BoundsOrigin;
-		FVector BoundsExtent;
-		Actor->GetActorBounds(true, BoundsOrigin, BoundsExtent, false);
-		const FVector Start(BoundsOrigin.X, BoundsOrigin.Y, BoundsOrigin.Z - BoundsExtent.Z + 2.0);
-		const FVector End = Start - FVector(0.0, 0.0, 22.0);
-		FHitResult Hit;
-		const FCollisionQueryParams QueryParams(NAME_None, false, Actor);
-		const FCollisionObjectQueryParams ObjectParams(
-			ECC_TO_BITFIELD(ECC_WorldStatic)
-			| ECC_TO_BITFIELD(ECC_WorldDynamic)
-			| ECC_TO_BITFIELD(ECC_PhysicsBody));
-		if (!World->LineTraceSingleByObjectType(Hit, Start, End, ObjectParams, QueryParams))
-		{
-			return false;
-		}
-		const UPrimitiveComponent* HitComponent = Hit.GetComponent();
-		return HitComponent && HitComponent->GetComponentLevel() == Level;
-	}
 }
 
 #if WITH_DEV_AUTOMATION_TESTS
 bool UEMSWorldPartitionRuntimeSubsystem::IsActorSupportedByLevelForTesting(UWorld* World, AActor* Actor, const ULevel* Level)
 {
-	return IsActorSupportedByLevel(World, Actor, Level);
+	return EMSAddonsWorldPartition::IsActorSupportedByLevel(World, Actor, Level);
 }
 #endif
 
@@ -190,6 +138,9 @@ void UEMSWorldPartitionRuntimeSubsystem::Deinitialize()
 	LiveActorsById.Empty();
 	LiveIdsByActor.Empty();
 	RejectedRecordIds.Empty();
+	DeferredDormancy.Empty();
+	DeferredSupportCells.Empty();
+	DeferredDestroyedIds.Empty();
 	RuntimeCellGuids.Empty();
 	bRuntimeCellGuidsBuilt = false;
 	PrimaryManager.Reset();
@@ -207,6 +158,84 @@ bool UEMSWorldPartitionRuntimeSubsystem::CanOperate() const
 		&& IsAuthorityNetMode(World->GetNetMode())
 		&& IsValid(World->GetWorldPartition())
 		&& World->GetWorldPartition()->bEnableStreaming;
+}
+
+bool UEMSWorldPartitionRuntimeSubsystem::IsEMSBusy() const
+{
+#if WITH_DEV_AUTOMATION_TESTS
+	if (bForceEMSBusyForTests) return true;
+#endif
+	const UEMSObject* EMS = BoundEMSObject.Get();
+	return bLoading || (EMS && (EMS->IsInitialWorldPartitionLoading() || EMS->IsAsyncTaskActive(false)));
+}
+
+void UEMSWorldPartitionRuntimeSubsystem::StageDormancy(const FGuid& LocalId, AActor* Actor, const FGuid& RequiredCell)
+{
+	if (!IsValid(Actor)) return;
+	if (!DeferredSupportCells.Contains(LocalId) || RequiredCell.IsValid()) DeferredSupportCells.Add(LocalId, RequiredCell);
+	if (RequiredCell.IsValid())
+	{
+		if (FEMSWorldPartitionRuntimeActorRecord* Pending = DeferredDormancy.Find(LocalId)) Pending->RequiredCellGuid = RequiredCell;
+	}
+	if (DeferredDormancy.Contains(LocalId) || CapturingActor == Actor) return;
+	FEMSWorldPartitionRuntimeActorRecord Candidate;
+	Candidate.LocalId = LocalId;
+	Candidate.ActorClass = FSoftClassPath(Actor->GetClass());
+	Candidate.SavedTransform = Actor->GetActorTransform();
+	Candidate.RequiredCellGuid = RequiredCell;
+	const uint64 Generation = LoadGeneration;
+	TStrongObjectPtr<AActor> ActorScope(Actor);
+	TGuardValue<AActor*> Capturing(CapturingActor, Actor);
+	if (SaveActorState(Actor, Candidate.ActorBinaryData) && Generation == LoadGeneration
+		&& IsValid(Actor) && LiveActorsById.FindRef(LocalId).Get() == Actor)
+	{
+		if (const FGuid* Cell = DeferredSupportCells.Find(LocalId)) Candidate.RequiredCellGuid = *Cell;
+		DeferredDormancy.Add(LocalId, MoveTemp(Candidate));
+	}
+}
+
+void UEMSWorldPartitionRuntimeSubsystem::ApplyDeferredChanges()
+{
+	if (bApplyingDeferred || !CanOperate() || !PrimaryManager.IsValid()) return;
+	TGuardValue<bool> Applying(bApplyingDeferred, true);
+	const uint64 Generation = LoadGeneration;
+	AEMSWorldPartitionRuntimeManager* Manager = PrimaryManager.Get();
+	for (const FGuid& Id : DeferredDestroyedIds)
+	{
+		Manager->RuntimeActorRecords.RemoveAll([&Id](const FEMSWorldPartitionRuntimeActorRecord& Record) { return Record.LocalId == Id; });
+	}
+	DeferredDestroyedIds.Reset();
+	TArray<FGuid> Ids;
+	DeferredSupportCells.GetKeys(Ids);
+	for (const FGuid& Id : Ids)
+	{
+		if (!PrimaryManager.IsValid()) return;
+		if (!DeferredDormancy.Contains(Id))
+		{
+			AActor* Actor = LiveActorsById.FindRef(Id).Get();
+			if (Actor) StageDormancy(Id, Actor, DeferredSupportCells.FindRef(Id));
+		}
+		if (Generation != LoadGeneration) return;
+		const FEMSWorldPartitionRuntimeActorRecord* Pending = DeferredDormancy.Find(Id);
+		FEMSWorldPartitionRuntimeActorRecord* Record = FindRecordMutable(Id);
+		if (!Pending || !Record) continue;
+		*Record = *Pending;
+		const bool bRemoved = DestroyActorInternally(Id);
+		if (Generation != LoadGeneration) return;
+		if (bRemoved)
+		{
+			DeferredDormancy.Remove(Id);
+			DeferredSupportCells.Remove(Id);
+		}
+	}
+	if (PrimaryManager.IsValid())
+	{
+		for (const FGuid& Id : DeferredDestroyedIds)
+		{
+			PrimaryManager->RuntimeActorRecords.RemoveAll([&Id](const FEMSWorldPartitionRuntimeActorRecord& Record) { return Record.LocalId == Id; });
+		}
+		DeferredDestroyedIds.Reset();
+	}
 }
 
 bool UEMSWorldPartitionRuntimeSubsystem::EnsureReady()
@@ -413,7 +442,7 @@ AActor* UEMSWorldPartitionRuntimeSubsystem::SpawnManagedActor(
 	}
 
 	AEMSWorldPartitionRuntimeManager* Manager = PrimaryManager.Get();
-	if (!Manager || Manager->RuntimeActorRecords.Num() >= MaxRuntimeActorRecords)
+	if (!Manager || IsEMSBusy() || Manager->RuntimeActorRecords.Num() >= MaxRuntimeActorRecords)
 	{
 		UE_LOG(
 			LogEMSAddonsWorldPartition,
@@ -457,6 +486,13 @@ AActor* UEMSWorldPartitionRuntimeSubsystem::SpawnManagedActor(
 		return nullptr;
 	}
 
+	if (Actor->FindComponentByClass<UEMSWorldPartitionPlacedComponent>())
+	{
+		UE_LOG(LogEMSAddonsWorldPartition, Warning, TEXT("Use editor placement for actors with a World Partition Placed Component; runtime management was refused. Class=%s"), *Class->GetPathName());
+		DiscardActor(Actor);
+		return nullptr;
+	}
+
 	if (!SaveActorState(Actor, Candidate.ActorBinaryData))
 	{
 		DiscardActor(Actor);
@@ -470,7 +506,7 @@ AActor* UEMSWorldPartitionRuntimeSubsystem::SpawnManagedActor(
 
 	//The spawn above ran user construction and BeginPlay, which may have added records.
 	Manager = PrimaryManager.Get();
-	if (!Manager || Manager->RuntimeActorRecords.Num() >= MaxRuntimeActorRecords)
+	if (!Manager || IsEMSBusy() || Manager->RuntimeActorRecords.Num() >= MaxRuntimeActorRecords)
 	{
 		DiscardActor(Actor);
 		UE_LOG(
@@ -518,6 +554,7 @@ void UEMSWorldPartitionRuntimeSubsystem::DiscardActor(AActor* Actor)
 	Actor->Rename(*DisposalName.ToString(), nullptr, REN_DontCreateRedirectors | REN_NonTransactional);
 	const bool bPreviouslySuppressed = bSuppressGameplayDestruction;
 	bSuppressGameplayDestruction = true;
+	TGuardValue<AActor*> SuppressedActor(SuppressedDestructionActor, Actor);
 	Actor->Destroy();
 	bSuppressGameplayDestruction = bPreviouslySuppressed;
 	DestroyOrphanedController(Controller.Get());
@@ -570,7 +607,7 @@ void UEMSWorldPartitionRuntimeSubsystem::HandleActorDestroyed(AActor* Actor)
 	}
 	const FGuid LocalId = *FoundId;
 	UWorld* World = GetWorld();
-	const bool bGameplayDestruction = !bSuppressGameplayDestruction
+	const bool bGameplayDestruction = Actor != SuppressedDestructionActor
 		&& !bDeinitializing
 		&& World
 		&& !World->bIsTearingDown;
@@ -583,7 +620,10 @@ void UEMSWorldPartitionRuntimeSubsystem::HandleActorDestroyed(AActor* Actor)
 		bGameplayDestruction ? 1 : 0);
 	if (bGameplayDestruction)
 	{
-		if (AEMSWorldPartitionRuntimeManager* Manager = PrimaryManager.Get())
+		DeferredDormancy.Remove(LocalId);
+		DeferredSupportCells.Remove(LocalId);
+		if (IsEMSBusy()) DeferredDestroyedIds.Add(LocalId);
+		else if (AEMSWorldPartitionRuntimeManager* Manager = PrimaryManager.Get())
 		{
 			Manager->RuntimeActorRecords.RemoveAll(
 				[&LocalId](const FEMSWorldPartitionRuntimeActorRecord& Record) { return Record.LocalId == LocalId; });
@@ -644,12 +684,15 @@ bool UEMSWorldPartitionRuntimeSubsystem::CaptureActor(const FGuid& LocalId, AAct
 		return false;
 	}
 	TArray<uint8> CapturedBinary;
+	const uint64 Generation = LoadGeneration;
+	TStrongObjectPtr<AActor> ActorScope(Actor);
+	TGuardValue<AActor*> Capturing(CapturingActor, Actor);
 	if (!SaveActorState(Actor, CapturedBinary))
 	{
 		UE_LOG(LogEMSAddonsWorldPartition, Warning, TEXT("Failed to capture a managed runtime actor; its previous complete record is retained. Actor=%s"), *Actor->GetPathName());
 		return false;
 	}
-	if (!IsValid(Actor))
+	if (!IsValid(Actor) || Generation != LoadGeneration || LiveActorsById.FindRef(LocalId).Get() != Actor)
 	{
 		return false;
 	}
@@ -665,7 +708,15 @@ bool UEMSWorldPartitionRuntimeSubsystem::CaptureActor(const FGuid& LocalId, AAct
 	Candidate.SavedTransform = Actor->GetActorTransform();
 	Candidate.RecordVersion = FEMSWorldPartitionRuntimeActorRecord::CurrentVersion;
 	Candidate.ActorBinaryData = MoveTemp(CapturedBinary);
-	Candidate.RequiredCellGuid = FGuid();
+	// Loading removes live actors before manager deserialization. Retain support
+	// even without a departure event so overlapping coverage cannot restore an
+	// actor while its actual floor is still absent.
+	Candidate.RequiredCellGuid = EMSAddonsWorldPartition::GetCurrentSupportCell(GetWorld(), Actor);
+	if (const FGuid* Cell = DeferredSupportCells.Find(LocalId))
+	{
+		Candidate.RequiredCellGuid = *Cell;
+		DeferredDormancy.Add(LocalId, Candidate);
+	}
 	*Record = MoveTemp(Candidate);
 	return true;
 }
@@ -681,6 +732,12 @@ bool UEMSWorldPartitionRuntimeSubsystem::CaptureAndRemoveActor(const FGuid& Loca
 	{
 		return false;
 	}
+	if (DeferredSupportCells.Contains(LocalId))
+	{
+		if (!IsEMSBusy()) ApplyDeferredChanges();
+		return !LiveActorsById.Contains(LocalId);
+	}
+	if (IsEMSBusy()) return false;
 	return DestroyActorInternally(LocalId);
 }
 
@@ -709,6 +766,7 @@ bool UEMSWorldPartitionRuntimeSubsystem::DestroyActorInternally(const FGuid& Loc
 	const FString OriginalPath = Actor->GetPathName();
 	const bool bPreviouslySuppressed = bSuppressGameplayDestruction;
 	bSuppressGameplayDestruction = true;
+	TGuardValue<AActor*> SuppressedActor(SuppressedDestructionActor, Actor);
 	const FName DisposalName(*FString::Printf(
 		TEXT("EMS_WPRuntime_Disposed_%s"), *FGuid::NewGuid().ToString(EGuidFormats::Digits)));
 	if (!Actor->Rename(*DisposalName.ToString(), nullptr, REN_DontCreateRedirectors | REN_NonTransactional))
@@ -892,6 +950,7 @@ bool UEMSWorldPartitionRuntimeSubsystem::RestoreRecord(const FEMSWorldPartitionR
 	//A load callback may destroy the actor, which is the addon's own doing here.
 	const bool bPreviouslySuppressed = bSuppressGameplayDestruction;
 	bSuppressGameplayDestruction = true;
+	TGuardValue<AActor*> SuppressedActor(SuppressedDestructionActor, Actor);
 	const bool bLoaded = LoadActorState(Actor, Record.ActorBinaryData, true);
 	bSuppressGameplayDestruction = bPreviouslySuppressed;
 	const bool bStillBound = IsValid(Actor)
@@ -919,7 +978,7 @@ bool UEMSWorldPartitionRuntimeSubsystem::RestoreRecord(const FEMSWorldPartitionR
 void UEMSWorldPartitionRuntimeSubsystem::RestoreVisibleDormantRecords()
 {
 	AEMSWorldPartitionRuntimeManager* Manager = PrimaryManager.Get();
-	if (!CanOperate() || !Manager || Manager->RuntimeActorRecords.IsEmpty())
+	if (!CanOperate() || IsEMSBusy() || !Manager || Manager->RuntimeActorRecords.IsEmpty())
 	{
 		return;
 	}
@@ -966,10 +1025,13 @@ void UEMSWorldPartitionRuntimeSubsystem::RestoreVisibleDormantRecords()
 
 void UEMSWorldPartitionRuntimeSubsystem::Reconcile()
 {
-	if (!EnsureReady())
+	if (!EnsureReady() || IsEMSBusy())
 	{
 		return;
 	}
+	const uint64 Generation = LoadGeneration;
+	ApplyDeferredChanges();
+	if (Generation != LoadGeneration || bLoading) return;
 	TArray<FGuid> LiveIds;
 	LiveActorsById.GetKeys(LiveIds);
 	for (const FGuid& LocalId : LiveIds)
@@ -1016,15 +1078,20 @@ void UEMSWorldPartitionRuntimeSubsystem::HandleManagerPreSave(AEMSWorldPartition
 	{
 		return;
 	}
+	const uint64 Generation = LoadGeneration;
+	ApplyDeferredChanges();
+	if (Generation != LoadGeneration || bLoading) return;
 	TArray<FGuid> LiveIds;
 	LiveActorsById.GetKeys(LiveIds);
 	for (const FGuid& LocalId : LiveIds)
 	{
-		if (AActor* Actor = LiveActorsById.FindRef(LocalId).Get())
+		if (!DeferredDormancy.Contains(LocalId))
 		{
-			CaptureActor(LocalId, Actor);
+			if (AActor* Actor = LiveActorsById.FindRef(LocalId).Get()) CaptureActor(LocalId, Actor);
 		}
+		if (Generation != LoadGeneration || bLoading) return;
 	}
+	ApplyDeferredChanges();
 }
 
 void UEMSWorldPartitionRuntimeSubsystem::HandleManagerPreLoad(AEMSWorldPartitionRuntimeManager* Manager)
@@ -1035,6 +1102,11 @@ void UEMSWorldPartitionRuntimeSubsystem::HandleManagerPreLoad(AEMSWorldPartition
 		return;
 	}
 	bPrimaryManagerLoadedSincePersistentLoadCompletion = false;
+	++LoadGeneration;
+	bLoading = true;
+	DeferredDormancy.Reset();
+	DeferredSupportCells.Reset();
+	DeferredDestroyedIds.Reset();
 	//The load replaces every record, so earlier rejections no longer apply.
 	RejectedRecordIds.Empty();
 	TArray<FGuid> LiveIds;
@@ -1063,6 +1135,7 @@ void UEMSWorldPartitionRuntimeSubsystem::HandleManagerLoaded(AEMSWorldPartitionR
 		return;
 	}
 	bPrimaryManagerLoadedSincePersistentLoadCompletion = true;
+	bLoading = false;
 	RestoreVisibleDormantRecords();
 }
 
@@ -1078,12 +1151,17 @@ void UEMSWorldPartitionRuntimeSubsystem::HandlePersistentLevelLoaded(
 
 	const bool bManagerLoaded = bPrimaryManagerLoadedSincePersistentLoadCompletion;
 	bPrimaryManagerLoadedSincePersistentLoadCompletion = false;
+	bLoading = false;
 	RefreshPrimaryManager(false);
 	AEMSWorldPartitionRuntimeManager* Manager = PrimaryManager.Get();
 	if (bManagerLoaded || !Manager)
 	{
 		return;
 	}
+	++LoadGeneration;
+	DeferredDormancy.Reset();
+	DeferredSupportCells.Reset();
+	DeferredDestroyedIds.Reset();
 
 	TArray<FGuid> LiveIds;
 	LiveActorsById.GetKeys(LiveIds);
@@ -1227,7 +1305,7 @@ void UEMSWorldPartitionRuntimeSubsystem::HandleLevelBeginMakingInvisible(
 		{
 			continue;
 		}
-		if (IsActorSupportedByLevel(GetWorld(), Actor, LoadedLevel))
+		if (EMSAddonsWorldPartition::IsActorSupportedByLevel(GetWorld(), Actor, LoadedLevel))
 		{
 			UE_LOG(
 				LogEMSAddonsWorldPartition,
@@ -1235,13 +1313,7 @@ void UEMSWorldPartitionRuntimeSubsystem::HandleLevelBeginMakingInvisible(
 				TEXT("A managed actor was made dormant because its supporting cell is being hidden. Actor=%s Cell=%s"),
 				*Actor->GetPathName(),
 				*UnloadingCell->GetDebugName());
-			if (CaptureAndRemoveActor(LocalId))
-			{
-				if (FEMSWorldPartitionRuntimeActorRecord* Record = FindRecordMutable(LocalId))
-				{
-					Record->RequiredCellGuid = UnloadingCell->GetGuid();
-				}
-			}
+			StageDormancy(LocalId, Actor, UnloadingCell->GetGuid());
 			continue;
 		}
 
@@ -1257,9 +1329,10 @@ void UEMSWorldPartitionRuntimeSubsystem::HandleLevelBeginMakingInvisible(
 				TEXT("A managed actor was made dormant because the last cell covering it is being hidden. Actor=%s Cell=%s"),
 				*Actor->GetPathName(),
 				*UnloadingCell->GetDebugName());
-			CaptureAndRemoveActor(LocalId);
+			StageDormancy(LocalId, Actor, FGuid());
 		}
 	}
+	if (!CapturingActor && !IsEMSBusy()) ApplyDeferredChanges();
 }
 
 void UEMSWorldPartitionRuntimeSubsystem::HandleLevelStreamingStateChanged(

@@ -4,6 +4,7 @@
 #include "CoreMinimal.h"
 #include "EMSActorSaveInterface.h"
 #include "EMSWorldPartitionRuntimeTypes.h"
+#include "EMSWorldPartitionPlacedTypes.h"
 #include "GameFramework/Actor.h"
 #include "EMSWorldPartitionRuntimeManager.generated.h"
 
@@ -18,6 +19,9 @@ public:
 
 	UPROPERTY(SaveGame, VisibleInstanceOnly, BlueprintReadOnly, Category = "EMS Addons|World Partition Runtime Actors")
 	TArray<FEMSWorldPartitionRuntimeActorRecord> RuntimeActorRecords;
+
+	UPROPERTY(SaveGame, VisibleInstanceOnly, Category = "EMS Addons|World Partition Placed Actors")
+	TArray<FEMSWorldPartitionPlacedActorRecord> PlacedActorRecords;
 
 	virtual void ActorPreSave_Implementation() override;
 	virtual void ActorPreLoad_Implementation() override;

@@ -50,6 +50,11 @@ public:
 		return bSuspended;
 	}
 
+	/** Persistence captures the gravity flag borrowed by this guard, not its temporary hold. */
+	bool GetGravityBeforeStreamingHold(const UPrimitiveComponent* Component, bool& OutGravity) const;
+	/** Changes whenever a streaming hold begins or ends. */
+	uint64 GetStreamingHoldGeneration() const { return StreamingHoldGeneration; }
+
 	/**
 	 * Reach of the resting-contact probe, in centimeters.
 	 *
@@ -96,6 +101,7 @@ private:
 	FDelegateHandle StateChangedHandle;
 	FTimerHandle InitialEvaluationTimer;
 	bool bSuspended = false;
+	uint64 StreamingHoldGeneration = 0;
 
 	bool TraceBelowOwner(double Reach, FHitResult& OutHit, bool bIgnoreDepartingLevels = false) const;
 

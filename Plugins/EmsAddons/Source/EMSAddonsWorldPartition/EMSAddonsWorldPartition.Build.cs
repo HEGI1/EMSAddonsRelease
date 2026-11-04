@@ -18,5 +18,7 @@ public class EMSAddonsWorldPartition : ModuleRules
 				"EasyMultiSave",
 				"EMSAddonsCore"
 			});
+
+		PrivateDependencyModuleNames.Add("EMSAddonsPhysics");
 	}
 }

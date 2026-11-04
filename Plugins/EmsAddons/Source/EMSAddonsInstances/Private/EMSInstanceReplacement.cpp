@@ -17,6 +17,7 @@ bool AEMSInstanceManager::ReplaceInstanceWithSettings(
 	UStaticMesh* ReplacementMesh = Replacement.Mesh.Get();
 	if (!ReplacementMesh
 		|| !Replacement.TransformOffset.IsValid()
+		|| IsPersistenceOperationInProgress()
 		|| !CanMutateInstanceState()
 		|| !IsValid(Component)
 		|| !Component->GetStaticMesh()

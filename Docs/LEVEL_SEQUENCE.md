@@ -1,45 +1,35 @@
 # Level Sequence Persistence
 
-Use **EMS Level Sequence Actor** to persist Level Sequence playback state through normal EMS saving.
-
-Position, play rate, playback direction, and finished state restore together as one coherent playback state.
+Use **EMS Level Sequence Actor** to save playback position, play rate, direction, loop progress, and finished state through EMS.
 
 ## Basic use
 
 1. Place an **EMS Level Sequence Actor** instead of the standard Level Sequence Actor.
-2. Assign the Level Sequence asset and configure playback normally.
-3. Adjust restore options when needed.
-4. Save and load through EMS normally.
+2. Assign its Level Sequence asset and configure playback.
+3. Adjust the restore options if needed.
+4. Save and load normally through EMS.
 
-The actor can live in streamed levels and World Partition cells like other placed actors.
+The actor supports streamed levels and World Partition.
 
 ## Restore options
 
-- **Resume If Playing** — resumes a sequence that was active when saved. Disable it when gameplay should decide when playback continues.
-- **Position Restore Policy** — **Jump And Evaluate** seeks directly to the saved position; **Traverse And Evaluate** evaluates the frames in between.
-- **Restore Timeout** — limits how long restoration waits for EMS, the sequence player, and bindings. After it, the saved state is restored without the bindings that are still unresolved. Only if the player itself never becomes ready does the actor fall back to authored autoplay; the saved state is then kept, not overwritten by that playback, until the next restore.
+- **Resume If Playing** — automatically resumes a sequence that was playing when saved.
+- **Position Restore Policy** — **Jump And Evaluate** goes directly to the saved position; **Traverse And Evaluate** also evaluates the intervening frames.
+- **Restore Timeout** — limits how long restoration waits for required playback objects and bindings.
 
-## Blueprint nodes
+## Blueprint nodes and events
 
-- **Is EMS Addon Restore Complete** — checks whether deferred restoration has finished.
-- **Get EMS Addon Restore Result** — returns the latest restore result.
-- **Play Looping** — call this on the EMS Level Sequence Actor to preserve the requested loop count. Use `-1` for infinite playback, `0` for a single play, or a positive number for that many repeats.
+- **Is EMS Addon Restore Complete** / **Get EMS Addon Restore Result** — check restoration status on the actor.
+- **Play Looping** — play a specified number of loops: `-1` for infinite playback, `0` for a single play, or a positive number for that many repeats.
 
-Use the EMS Level Sequence Actor as the restore-status target. Normal playback still uses Unreal's Level Sequence nodes; use the actor's **Play Looping** wrapper when changing the loop count at runtime.
+Events: **On Level Sequence Restore Started** and **On Level Sequence Restore Finished**.
 
-## Events
-
-- **On Level Sequence Restore Started**
-- **On Level Sequence Restore Finished**
+Normal Level Sequence playback nodes remain available.
 
 ## Important behavior
 
-- Authored autoplay is held while EMS restoration is pending so it cannot race the saved state.
-- Restore waits for root possessable bindings up to **Restore Timeout**, then restores anyway. A possessable whose actor is in an unloaded World Partition cell, or that gameplay binds later, no longer costs the saved progress. Sequencer evaluates it once its object resolves.
-- Saving while restoration is requested or pending preserves the loaded playback state until the player has been restored.
-- Pausing and resuming preserves the runtime loop count and completed-loop progress, including after loading a paused sequence.
-- Completed-loop progress follows Sequencer's actual loops, including reverse playback and several wraps in one update. A jump to another playback position does not count as a loop. Loading a finite sequence resumes with only its remaining repeats; once that run stops, later playback uses the authored loop count again.
-- Stopped and finished playback restores its direction as well as its position and status, without starting playback. A later direction toggle uses that restored direction.
-- Actors restored through Actor Spawner or World Partition Runtime Actors wait for EMS loading to finish without requiring membership in its loaded-actor event list.
-- Authored autoplay survives streamed hide/show cycles.
-- Capture and restore are server-authoritative. Replication remains the project's responsibility.
+- Saved playback restores the correct position and preserves paused, stopped, or finished states.
+- Runtime loop counts and completed-loop progress are preserved across saves.
+- A sequence can wait for actors or bindings in streamed-out areas. If bindings do not become ready before the timeout, available playback state is still restored.
+- A save made while restoration is pending does not replace the previously loaded playback state.
+- Capture and restoration are server-authoritative. Replication is the project's responsibility.

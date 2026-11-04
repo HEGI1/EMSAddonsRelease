@@ -1,55 +1,23 @@
 # Physics Streaming Guard
 
-Use **EMS Physics Streaming Guard** to keep a simulating actor from falling out
-of the world while the geometry underneath it is streamed out.
-
-## The problem
-
-An actor resting on a floor that lives in a streamed level or a World Partition
-cell keeps falling the moment that level is hidden. The floor's collision is
-gone, gravity is not. By the time the cell streams back in, the actor is far
-below the world — and a save taken meanwhile records it there. The same happens
-at level start, where an actor can begin play a few frames before the cell under
-it becomes visible.
+Use **EMS Physics Streaming Guard** to prevent a simulating actor from falling through missing geometry when its supporting streamed level or World Partition cell unloads.
 
 ## Basic use
 
-1. Add an **EMS Physics Streaming Guard** component to any actor with simulating
-   primitive components.
-2. Nothing to configure.
+1. Add an **EMS Physics Streaming Guard** component to an actor with simulating physics components.
+2. No additional configuration is required.
 
-**EMS Geometry Collection Actor** already carries one, so a placed Geometry
-Collection needs no setup.
+**EMS Geometry Collection Actor** already includes this component.
 
 ## Blueprint nodes
 
-- **Is Physics Suspended For Streaming** — true while the guard is holding the
-  owner because the world below it is unloaded.
+- **Is Physics Suspended For Streaming** — reports whether the guard is currently holding the actor.
 
 ## Important behavior
 
-- The guard suspends only in two situations: the level that is actually holding
-  the owner up is about to become invisible, or nothing at all is loaded below
-  the owner at **Begin Play** in a world that streams (World Partition
-  streaming, or a conventional streamed sublevel). A static world has nothing
-  to explain missing support with, so it never runs the Begin Play check.
-  Ordinary gameplay — a jump, an object knocked off a ledge, debris falling
-  into a pit — reaches neither condition and is never frozen.
-- Streaming events check for usable support below the owner, including geometry
-  further down than the original floor. Collision from a level being removed is
-  ignored even while it remains registered, so overlapping streaming changes
-  cannot release a body onto a disappearing floor. Loaded geometry below that
-  floor can still release it; falling onto that is ordinary physics. BSP
-  collision belongs to its level rather than to an actor and counts as support
-  the same way.
-- Suspending clears velocity and turns gravity off for every simulating primitive
-  on the owner; resuming hands the gravity setting back exactly as it was. An
-  actor hidden while suspended gets it back at **End Play** too.
-- Simulation itself is never switched off. On a Geometry Collection that would
-  recreate the component's physics state and drop the Chaos proxy that Geometry
-  Collection restore depends on. Later impulses, forces, or moving-body contacts
-  can still move a suspended body; the guard does not lock its transform.
-- This is a gameplay safeguard, not persistence. It runs in every net mode, it is
-  not server-authoritative, and it never reads or writes save data.
-- It reacts to streaming events rather than polling, so an idle guard costs
-  nothing per frame.
+- The guard acts when supporting streamed geometry is removed or is not yet available at startup. It does not freeze normal jumps, falls, or other gameplay movement.
+- While held, the actor's simulating components have gravity disabled and their velocities cleared. Their original gravity settings return when support is available.
+- Physics simulation stays enabled. Forces and collisions can still move a held actor.
+- The guard prevents falling; it does **not** save or restore actor state.
+- For [World Partition Placed Actors](WORLD_PARTITION_PLACED_ACTORS.md), author the guard on the actor class when it must also exist on a recreated actor.
+- Existing velocity is not restored after a hold. The guard works independently of EMS persistence and does not handle replication.

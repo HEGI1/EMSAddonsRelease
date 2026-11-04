@@ -5,6 +5,7 @@
 #include "Engine/EngineTypes.h"
 #include "Subsystems/WorldSubsystem.h"
 #include "UObject/ObjectKey.h"
+#include "EMSWorldPartitionRuntimeTypes.h"
 #include "EMSWorldPartitionRuntimeSubsystem.generated.h"
 
 class AEMSWorldPartitionRuntimeManager;
@@ -32,6 +33,9 @@ public:
 
 	bool IsManagedActor(const AActor* Actor) const;
 
+	/** Shared persistence coordinator; actor registries remain separate. */
+	AEMSWorldPartitionRuntimeManager* GetPrimaryManager() { return EnsureReady() ? PrimaryManager.Get() : nullptr; }
+
 	/**
 	 * True while this subsystem is itself removing a managed actor.
 	 *
@@ -40,6 +44,7 @@ public:
 	 * streaming out and a load replacing the records report true.
 	 */
 	bool IsRemovingManagedActor() const { return bSuppressGameplayDestruction; }
+	bool IsRemovingManagedActor(const AActor* Actor) const { return Actor && SuppressedDestructionActor == Actor; }
 	void GetManagedActors(TArray<AActor*>& OutActors) const;
 	int32 GetManagedActorCount() const;
 	int32 GetDormantActorCount() const;
@@ -56,6 +61,16 @@ public:
 	void SetCaptureFailureForTesting(bool bFail) { bForceCaptureFailureForTests = bFail; }
 	void SetDestroyFailureForTesting(bool bFail) { bForceDestroyFailureForTests = bFail; }
 	void SetCellValidationBypassForTesting(bool bBypass) { bBypassCellValidationForTests = bBypass; }
+	void SetEMSBusyForTesting(bool bBusy) { bForceEMSBusyForTests = bBusy; }
+	bool StageDormancyForTesting(AActor* Actor, const FGuid& Cell)
+	{
+		const FGuid* Id = Actor ? LiveIdsByActor.Find(FObjectKey(Actor)) : nullptr;
+		if (!Id) return false;
+		const FGuid Copy = *Id;
+		StageDormancy(Copy, Actor, Cell);
+		return DeferredDormancy.Contains(Copy);
+	}
+	void ApplyDeferredChangesForTesting() { if (!IsEMSBusy()) ApplyDeferredChanges(); }
 	bool DestroyManagedActorForTesting(const AActor* Actor);
 	static bool IsActorSupportedByLevelForTesting(UWorld* World, AActor* Actor, const ULevel* Level);
 
@@ -74,6 +89,16 @@ private:
 	FDelegateHandle StateChangedHandle;
 	FTimerHandle ReconcileTimerHandle;
 	TWeakObjectPtr<UEMSObject> BoundEMSObject;
+	TMap<FGuid, FEMSWorldPartitionRuntimeActorRecord> DeferredDormancy;
+	TMap<FGuid, FGuid> DeferredSupportCells;
+	TSet<FGuid> DeferredDestroyedIds;
+	AActor* CapturingActor = nullptr;
+	uint64 LoadGeneration = 0;
+	bool bLoading = false;
+	bool bApplyingDeferred = false;
+	bool IsEMSBusy() const;
+	void StageDormancy(const FGuid& LocalId, AActor* Actor, const FGuid& RequiredCell);
+	void ApplyDeferredChanges();
 
 	/**
 	 * Every runtime cell GUID the world's streaming hash generated, read once.
@@ -102,6 +127,7 @@ private:
 	 * removal is not gameplay's doing and must not drop the durable record.
 	 */
 	bool bSuppressGameplayDestruction = false;
+	AActor* SuppressedDestructionActor = nullptr;
 	bool bDeinitializing = false;
 	bool bDelegatesBound = false;
 	bool bPrimaryManagerLoadedSincePersistentLoadCompletion = false;
@@ -111,6 +137,7 @@ private:
 	bool bForceDestroyFailureForTests = false;
 	bool bBypassCellValidationForTests = false;
 	bool bLastManagerPreSaveOnGameThread = false;
+	bool bForceEMSBusyForTests = false;
 #endif
 
 	bool CanOperate() const;

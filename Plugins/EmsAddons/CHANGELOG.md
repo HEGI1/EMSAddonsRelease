@@ -1,5 +1,28 @@
 # Changelog
 
+## 1.1.2 - 2026-11-04
+
+### Added
+
+- **World Partition Placed Actors:** save and restore editor-placed actors as they move between World Partition cells. Add **EMS World Partition Placed Component** to an eligible placed actor; its non-spatial setting is enforced automatically.
+
+### Changed
+
+- **Actor Spawner:** ordinary gameplay spawns are blocked while EMS is busy, with restoration callbacks retaining their supported reentrant behavior.
+- **Instanced Meshes and Foliage:** **Replace Instance** now refuses changes during an EMS save or load. Retry once the operation completes.
+
+### Improved
+
+- **World Partition:** more reliable restoration when an actor's supporting streamed geometry disappears, including overlapping cells.
+- **Physics Streaming Guard:** preserves intended gravity when used with World Partition Placed Actors.
+- **Managed actors and instances:** more reliable persistence during asynchronous saves, loads, and streaming transitions.
+
+### Fixed
+
+- **World Partition Placed Actors:** gameplay destruction and earlier saves now restore the correct state across streaming and map reloads.
+- **World Partition Runtime Actors:** actors wait for their supporting streamed geometry before returning after load.
+- **Actor Spawner and World Partition:** managed actor removals triggered by restoration callbacks are saved correctly.
+
 ## 1.1.0 - 2026-11-02
 
 ### Improved

@@ -2,6 +2,8 @@
 #include "EMSWorldPartitionRuntimeLibrary.h"
 
 #include "EMSWorldPartitionRuntimeSubsystem.h"
+#include "EMSWorldPartitionPlacedSubsystem.h"
+#include "Components/ActorComponent.h"
 #include "Engine/Engine.h"
 #include "Engine/World.h"
 
@@ -39,7 +41,19 @@ bool UEMSWorldPartitionRuntimeLibrary::IsWorldPartitionRuntimeActorManaged(
 bool UEMSWorldPartitionRuntimeLibrary::IsWorldPartitionRuntimeRemovalInProgress(const UObject* WorldContextObject)
 {
 	const UEMSWorldPartitionRuntimeSubsystem* Subsystem = ResolveSubsystem(WorldContextObject);
-	return Subsystem && Subsystem->IsRemovingManagedActor();
+	const UEMSWorldPartitionPlacedSubsystem* Placed = Subsystem
+		? Subsystem->GetWorld()->GetSubsystem<UEMSWorldPartitionPlacedSubsystem>() : nullptr;
+	const AActor* ContextActor = Cast<AActor>(WorldContextObject);
+	if (!ContextActor)
+	{
+		if (const UActorComponent* Component = Cast<UActorComponent>(WorldContextObject)) ContextActor = Component->GetOwner();
+	}
+	if (ContextActor)
+	{
+		return (Subsystem && Subsystem->IsRemovingManagedActor(ContextActor))
+			|| (Placed && Placed->IsRemovingManagedActor(ContextActor));
+	}
+	return (Subsystem && Subsystem->IsRemovingManagedActor()) || (Placed && Placed->IsRemovingManagedActor());
 }
 
 TArray<AActor*> UEMSWorldPartitionRuntimeLibrary::GetWorldPartitionRuntimeActors(const UObject* WorldContextObject)

@@ -98,7 +98,7 @@ public:
 	UPROPERTY(BlueprintAssignable, Category = "EMS Addons|Actor Spawner|Events")
 	FEMSSpawnedActorEvent OnActorRemoved;
 
-	/** Returns null during save capture; retry the spawn after saving completes. */
+	/** Returns null during an EMS save or load, except from this spawner's restore callbacks. */
 	UFUNCTION(
 		BlueprintCallable,
 		Category = "EMS Addons|Actor Spawner",
@@ -146,6 +146,11 @@ public:
 	virtual void ActorPreLoad_Implementation() override;
 	virtual void ActorLoaded_Implementation() override;
 
+#if WITH_DEV_AUTOMATION_TESTS
+	void SetEMSBusyForTesting(bool bBusy) { bForceEMSBusyForTests = bBusy; }
+	void ApplyDeferredDestructionsForTesting() { ApplyDeferredDestructions(); }
+#endif
+
 #if WITH_EDITOR
 	virtual void PostDuplicate(bool bDuplicateForPIE) override;
 
@@ -189,12 +194,21 @@ private:
 
 	FDelegateHandle ActorDestroyedHandle;
 	EEMSSpawnerDestructionContext ActiveDestructionContext = EEMSSpawnerDestructionContext::None;
+	AActor* ActiveDestructionActor = nullptr;
 	bool bRestoreFinished = true;
 	bool bRestoreHadFailure = false;
 	bool bRestoreHadSkippedRecord = false;
 	bool bIsEndingPlay = false;
 	bool bCapturingState = false;
+	TSet<FGuid> DeferredDestroyedIds;
+	FTimerHandle DeferredDestructionTimer;
+#if WITH_DEV_AUTOMATION_TESTS
+	bool bForceEMSBusyForTests = false;
+#endif
 	FGuid SpawnerIdentityBeforeLoad;
+	bool IsEMSBusy() const;
+	void RecordGameplayDestruction(const FGuid& LocalId);
+	void ApplyDeferredDestructions();
 
 	bool CanMutateSpawnedActors() const;
 	bool IsRecordValid(const FEMSSpawnedActorRecord& Record, FText& OutReason) const;

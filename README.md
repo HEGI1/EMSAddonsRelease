@@ -1,6 +1,6 @@
 # Easy Multi Save Addons
 
-**Current Version: 1.1.0**
+**Current Version: 1.1.2**
 
 **Easy Multi Save Addons** provide ready-made extensions for more specialized Unreal Engine workflows that would otherwise require project-specific Blueprint logic. They build directly on Easy Multi Save, reusing its save system while keeping the core plugin lean and focused.
 
@@ -8,8 +8,9 @@
 
 | Addon | Use it for | Basic use |
 | --- | --- | --- |
-| **Autosave & Checkpoints** | Automatic saves and gameplay checkpoints. | Configure the settings, call **Request Autosave**, or place an **EMS Checkpoint**. |
+| **Autosave and Checkpoints** | Automatic saves and gameplay checkpoints. | Configure the settings, call **Request Autosave**, or place an **EMS Checkpoint**. |
 | **Actor Spawner** | Runtime actors that must belong to a specific streamed level or World Partition cell. | Place an **EMS Actor Spawner** there and call **Spawn Actor**. |
+| **World Partition Placed Actors** | Placed actors that move freely and follow streaming at their current location. | Author an **EMS World Partition Placed Component** on a placed actor; non-spatial placement is enforced. |
 | **World Partition Runtime Actors** | Runtime actors that should follow World Partition streaming based on their current location. | Call **Spawn World Partition Runtime Actor**. Nothing needs to be placed. |
 | **Geometry Collection** | Saving fractured Chaos Geometry Collection state. | Use an **EMS Geometry Collection Actor**. |
 | **Level Sequence** | Saving Level Sequence playback state. | Use an **EMS Level Sequence Actor**. |
@@ -18,16 +19,11 @@
 
 Save and load normally through EMS after setup.
 
-### Runtime actor choice
-
-- **Normal runtime actor:** use Easy Multi Save normally.
-- **Must belong to a specific streamed level or cell:** use **Actor Spawner**.
-- **Should unload and return with its current World Partition location:** use **World Partition Runtime Actors**.
-
 ## Documentation
 
 - [Autosave and Checkpoints](Docs/AUTOSAVE_CHECKPOINTS.md)
 - [Actor Spawner](Docs/ACTOR_SPAWNER.md)
+- [World Partition Placed Actors](Docs/WORLD_PARTITION_PLACED_ACTORS.md)
 - [World Partition Runtime Actors](Docs/WORLD_PARTITION_RUNTIME_ACTORS.md)
 - [Geometry Collection Persistence](Docs/GEOMETRY_COLLECTION.md)
 - [Level Sequence Persistence](Docs/LEVEL_SEQUENCE.md)
@@ -37,8 +33,6 @@ Save and load normally through EMS after setup.
 ## Version history
 
 See the [Changelog](Plugins/EmsAddons/CHANGELOG.md) for release notes and recent changes.
-
-Development fixes are recorded under **Unreleased**. Version numbers change when releases are synchronized.
 
 ## Requirements
 

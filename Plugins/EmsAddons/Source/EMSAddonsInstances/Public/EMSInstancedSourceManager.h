@@ -148,7 +148,14 @@ public:
 	virtual bool IsEMSAddonRestoreComplete() const override;
 	virtual FEMSAddonResult GetEMSAddonRestoreResult() const override;
 
+#if WITH_DEV_AUTOMATION_TESTS
+	void SetEMSBusyForTesting(bool bBusy) { bForceEMSBusyForTests = bBusy; }
+	void ApplyDeferredSavedDeltasForTesting() { ApplyDeferredSavedDeltas(); }
+#endif
+
 protected:
+	/** Replacement descriptors are serialized with this manager and cannot change while EMS owns them. */
+	bool IsPersistenceOperationInProgress() const { return IsEMSBusy(); }
 	UPROPERTY(
 		SaveGame,
 		VisibleInstanceOnly,
@@ -295,6 +302,16 @@ protected:
 		const FText& Reason) const;
 
 private:
+	TArray<FEMSInstanceSourceDelta> DeferredSavedDeltas;
+	bool bHasDeferredSavedDeltas = false;
+	bool bCapturingForSave = false;
+	FTimerHandle DeferredDeltasTimer;
+#if WITH_DEV_AUTOMATION_TESTS
+	bool bForceEMSBusyForTests = false;
+#endif
+	const TArray<FEMSInstanceSourceDelta>& GetEffectiveSavedDeltas() const { return bHasDeferredSavedDeltas ? DeferredSavedDeltas : SavedDeltas; }
+	bool IsEMSBusy() const;
+	void ApplyDeferredSavedDeltas();
 	struct FResolvedInstance
 	{
 		FTransform Transform = FTransform::Identity;

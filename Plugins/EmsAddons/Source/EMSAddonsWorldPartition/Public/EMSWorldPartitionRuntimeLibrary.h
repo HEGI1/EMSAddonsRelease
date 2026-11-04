@@ -33,13 +33,15 @@ public:
 	static bool IsWorldPartitionRuntimeActorManaged(const UObject* WorldContextObject, const AActor* Actor);
 
 	/**
-	 * True while EMSAddons is removing a managed actor, either because its location
+	 * True while EMSAddons is removing a managed runtime or placed actor, either because its location
 	 * streamed out or because a load is replacing the runtime records.
 	 *
 	 * Read this from End Play. A managed actor cannot otherwise tell that removal
 	 * from gameplay destroying it, and the two usually deserve different reactions:
 	 * an actor being taken out of the world should release what it owns without
 	 * playing a death, dropping loot, or announcing itself as killed.
+	 * An actor or component context checks that actor; other world contexts report
+	 * whether any managed actor is being removed.
 	 */
 	UFUNCTION(
 		BlueprintPure,

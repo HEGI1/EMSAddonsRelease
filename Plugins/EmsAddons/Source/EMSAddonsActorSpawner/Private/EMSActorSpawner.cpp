@@ -17,6 +17,7 @@
 #include "Engine/Texture2D.h"
 #include "Engine/World.h"
 #include "Misc/SecureHash.h"
+#include "TimerManager.h"
 #include "UObject/ConstructorHelpers.h"
 #include "WorldPartition/ActorInstanceGuids.h"
 
@@ -142,6 +143,10 @@ void AEMSActorSpawner::BeginPlay()
 	EnsureSpawnerIdentity();
 	EnsureActorDestroyedHandler();
 	RebuildLiveBindings();
+	if (!DeferredDestroyedIds.IsEmpty())
+	{
+		if (UWorld* World = GetWorld()) DeferredDestructionTimer = World->GetTimerManager().SetTimerForNextTick(this, &AEMSActorSpawner::ApplyDeferredDestructions);
+	}
 }
 
 void AEMSActorSpawner::EnsureActorDestroyedHandler()
@@ -284,6 +289,7 @@ void AEMSActorSpawner::RetagLiveActorsForIdentityChange(const FGuid& PreviousIde
 void AEMSActorSpawner::EndPlay(const EEndPlayReason::Type EndPlayReason)
 {
 	bIsEndingPlay = true;
+	if (UWorld* World = GetWorld()) World->GetTimerManager().ClearTimer(DeferredDestructionTimer);
 	RemoveActorDestroyedHandler();
 
 	if (EndPlayReason == EEndPlayReason::Destroyed)
@@ -308,6 +314,45 @@ bool AEMSActorSpawner::CanMutateSpawnedActors() const
 		&& IsValid(GetWorld())
 		&& HasAuthority()
 		&& !bIsEndingPlay;
+}
+
+bool AEMSActorSpawner::IsEMSBusy() const
+{
+#if WITH_DEV_AUTOMATION_TESTS
+	if (bForceEMSBusyForTests) return true;
+#endif
+	const UEMSObject* EMS = ResolveEMSObject();
+	return EMS && (EMS->IsInitialWorldPartitionLoading() || EMS->IsAsyncTaskActive(false));
+}
+
+void AEMSActorSpawner::RecordGameplayDestruction(const FGuid& LocalId)
+{
+	if (!bCapturingState && IsEMSBusy())
+	{
+		DeferredDestroyedIds.Add(LocalId);
+		if (UWorld* World = GetWorld())
+		{
+			World->GetTimerManager().ClearTimer(DeferredDestructionTimer);
+			DeferredDestructionTimer = World->GetTimerManager().SetTimerForNextTick(this, &AEMSActorSpawner::ApplyDeferredDestructions);
+		}
+		return;
+	}
+	if (FEMSSpawnedActorRecord* Record = FindRecordMutable(LocalId)) Record->bExists = false;
+}
+
+void AEMSActorSpawner::ApplyDeferredDestructions()
+{
+	if (bIsEndingPlay) return;
+	if (!bCapturingState && IsEMSBusy())
+	{
+		if (UWorld* World = GetWorld()) DeferredDestructionTimer = World->GetTimerManager().SetTimerForNextTick(this, &AEMSActorSpawner::ApplyDeferredDestructions);
+		return;
+	}
+	for (const FGuid& Id : DeferredDestroyedIds)
+	{
+		if (FEMSSpawnedActorRecord* Record = FindRecordMutable(Id)) Record->bExists = false;
+	}
+	DeferredDestroyedIds.Reset();
 }
 
 bool AEMSActorSpawner::IsRecordValid(const FEMSSpawnedActorRecord& Record, FText& OutReason) const
@@ -348,7 +393,7 @@ AActor* AEMSActorSpawner::SpawnActor(
 	FEMSSpawnedActorId& OutActorId)
 {
 	OutActorId = FEMSSpawnedActorId();
-	if (!CanMutateSpawnedActors() || bCapturingState || !ActorClass || !WorldTransform.IsValid())
+	if (!CanMutateSpawnedActors() || bCapturingState || (IsEMSBusy() && bRestoreFinished) || !ActorClass || !WorldTransform.IsValid())
 	{
 		return nullptr;
 	}
@@ -809,16 +854,14 @@ bool AEMSActorSpawner::DestroyLiveActor(
 		}
 		if (bMarkAbsent)
 		{
-			if (FEMSSpawnedActorRecord* Record = FindRecordMutable(LocalId))
-			{
-				Record->bExists = false;
-			}
+			RecordGameplayDestruction(LocalId);
 		}
 		return true;
 	}
 
 	const EEMSSpawnerDestructionContext PreviousContext = ActiveDestructionContext;
 	ActiveDestructionContext = Context;
+	TGuardValue<AActor*> DestructionActor(ActiveDestructionActor, Actor);
 	const FName OriginalName = Actor->GetFName();
 	const FString OriginalPath = Actor->GetPathName();
 	bool bRenamedForReplacement = false;
@@ -871,10 +914,7 @@ bool AEMSActorSpawner::DestroyLiveActor(
 
 	if (bMarkAbsent)
 	{
-		if (FEMSSpawnedActorRecord* Record = FindRecordMutable(LocalId))
-		{
-			Record->bExists = false;
-		}
+		RecordGameplayDestruction(LocalId);
 	}
 	if (Context == EEMSSpawnerDestructionContext::Gameplay)
 	{
@@ -893,7 +933,7 @@ void AEMSActorSpawner::HandleChildEndPlay(AActor* Actor, const EEndPlayReason::T
 	{
 		return;
 	}
-	if (IsTeardownReason(EndPlayReason) || bIsEndingPlay || ActiveDestructionContext != EEMSSpawnerDestructionContext::None)
+	if (IsTeardownReason(EndPlayReason) || bIsEndingPlay || ActiveDestructionActor == Actor)
 	{
 		UnregisterLiveActor(Actor);
 	}
@@ -913,12 +953,9 @@ void AEMSActorSpawner::HandleChildDestroyed(AActor* Actor)
 	const FGuid LocalId = *FoundId;
 	if (HasActorBegunPlay()
 		&& !bIsEndingPlay
-		&& ActiveDestructionContext == EEMSSpawnerDestructionContext::None)
+		&& ActiveDestructionActor != Actor)
 	{
-		if (FEMSSpawnedActorRecord* Record = FindRecordMutable(LocalId))
-		{
-			Record->bExists = false;
-		}
+		RecordGameplayDestruction(LocalId);
 		OnActorRemoved.Broadcast(FEMSSpawnedActorId(LocalId), Actor);
 	}
 	UnregisterLiveActor(Actor);
@@ -970,6 +1007,7 @@ bool AEMSActorSpawner::WasSpawnedByThis(const AActor* Actor) const
 
 bool AEMSActorSpawner::HasSpawnedActorRecord(FEMSSpawnedActorId ActorId) const
 {
+	if (DeferredDestroyedIds.Contains(ActorId.Guid)) return false;
 	const FEMSSpawnedActorRecord* Record = FindRecord(ActorId.Guid);
 	return Record != nullptr && Record->bExists;
 }
@@ -1094,12 +1132,15 @@ void AEMSActorSpawner::CaptureSpawnerStateOnGameThread()
 	// Child save callbacks may reenter the spawner. New actors cannot join this
 	// snapshot without a binary, and recursively capturing them is unbounded.
 	TGuardValue<bool> CaptureGuard(bCapturingState, true);
+	ApplyDeferredDestructions();
 	EnsureSpawnerIdentity();
 	CaptureLiveActorsForSave();
+	ApplyDeferredDestructions();
 }
 
 void AEMSActorSpawner::ActorPreLoad_Implementation()
 {
+	DeferredDestroyedIds.Reset();
 	SpawnerIdentityBeforeLoad = GetSpawnerIdentity();
 	bRestoreFinished = false;
 	LastRestoreResult = FEMSAddonResult(
@@ -1194,7 +1235,7 @@ void AEMSActorSpawner::RestoreSpawnedActors()
 		// Look up the original ID again: callbacks may have pruned or changed
 		// its record, and newly appended records are not part of this restore.
 		const FEMSSpawnedActorRecord* CurrentRecord = FindRecord(RestoreIds[Index]);
-		if (!CurrentRecord)
+		if (!CurrentRecord || DeferredDestroyedIds.Contains(RestoreIds[Index]))
 		{
 			continue;
 		}
@@ -1285,7 +1326,7 @@ void AEMSActorSpawner::RestoreSpawnedActors()
 			continue;
 		}
 		const FEMSSpawnedActorRecord* CurrentRecord = FindRecord(LocalId);
-		if (!CurrentRecord || !CurrentRecord->bExists)
+		if (!CurrentRecord || !CurrentRecord->bExists || DeferredDestroyedIds.Contains(LocalId))
 		{
 			continue;
 		}

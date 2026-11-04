@@ -1,4 +1,4 @@
-﻿//Easy Multi Save Addons - Copyright (C) 2026 by Michael Hegemann.
+//Easy Multi Save Addons - Copyright (C) 2026 by Michael Hegemann.
 #include "EMSInstancedSourceManager.h"
 
 #include "Components/BillboardComponent.h"
@@ -10,6 +10,7 @@
 #include "EMSAddonsGameThread.h"
 #include "EMSAddonsInstances.h"
 #include "EMSActors.h"
+#include "EMSObject.h"
 #include "Engine/Engine.h"
 #include "Engine/Level.h"
 #include "Engine/Texture2D.h"
@@ -152,6 +153,10 @@ void AEMSInstancedSourceManager::BeginPlay()
 	}
 
 	RefreshLoadedSources();
+	if (bHasDeferredSavedDeltas)
+	{
+		if (UWorld* World = GetWorld()) DeferredDeltasTimer = World->GetTimerManager().SetTimerForNextTick(this, &AEMSInstancedSourceManager::ApplyDeferredSavedDeltas);
+	}
 
 	// A load clears this again in ActorPreLoad, so real restoration is unaffected.
 	MarkLoadedSourcesRestored();
@@ -170,6 +175,7 @@ void AEMSInstancedSourceManager::EndPlay(
 	const EEndPlayReason::Type EndPlayReason)
 {
 	bIsEndingPlay = true;
+	if (UWorld* World = GetWorld()) World->GetTimerManager().ClearTimer(DeferredDeltasTimer);
 	bStreamingRestoreQueued = false;
 	ArrivedLevels.Reset();
 	ArrivedLevelWaitTicks = 0;
@@ -180,6 +186,27 @@ void AEMSInstancedSourceManager::EndPlay(
 	InvalidateInstanceKeyCaches();
 	bIsActiveManager = false;
 	Super::EndPlay(EndPlayReason);
+}
+
+bool AEMSInstancedSourceManager::IsEMSBusy() const
+{
+#if WITH_DEV_AUTOMATION_TESTS
+	if (bForceEMSBusyForTests) return true;
+#endif
+	const UEMSObject* EMS = UEMSObject::Get(this);
+	return EMS && (EMS->IsInitialWorldPartitionLoading() || EMS->IsAsyncTaskActive(false));
+}
+
+void AEMSInstancedSourceManager::ApplyDeferredSavedDeltas()
+{
+	if (!bHasDeferredSavedDeltas || bIsEndingPlay) return;
+	if (IsEMSBusy())
+	{
+		if (UWorld* World = GetWorld()) DeferredDeltasTimer = World->GetTimerManager().SetTimerForNextTick(this, &AEMSInstancedSourceManager::ApplyDeferredSavedDeltas);
+		return;
+	}
+	SavedDeltas = MoveTemp(DeferredSavedDeltas);
+	bHasDeferredSavedDeltas = false;
 }
 
 bool AEMSInstancedSourceManager::ActivateAsWorldManager()
@@ -382,7 +409,7 @@ bool AEMSInstancedSourceManager::CanMutateSourceState(
 	return !bRestorePending
 		&& (RestoredSources.Contains(SourceId)
 			|| FailedRestoreSources.Contains(SourceId)
-			|| !SavedDeltas.ContainsByPredicate(
+			|| !GetEffectiveSavedDeltas().ContainsByPredicate(
 				[&SourceId](const FEMSInstanceSourceDelta& Delta)
 				{
 					return Delta.SourceId == SourceId;
@@ -575,8 +602,8 @@ void AEMSInstancedSourceManager::RefreshLoadedSources()
 	}
 
 	TSet<FEMSInstanceSourceId> ChangedSources;
-	ChangedSources.Reserve(SavedDeltas.Num());
-	for (const FEMSInstanceSourceDelta& Delta : SavedDeltas)
+	ChangedSources.Reserve(GetEffectiveSavedDeltas().Num());
+	for (const FEMSInstanceSourceDelta& Delta : GetEffectiveSavedDeltas())
 	{
 		ChangedSources.Add(Delta.SourceId);
 	}
@@ -768,7 +795,7 @@ bool AEMSInstancedSourceManager::CaptureDeltas(const ULevel* OnlyLevel)
 
 	int32 SkippedSources = 0;
 	TMap<FEMSInstanceSourceId, FEMSInstanceSourceDelta> MergedDeltas;
-	for (const FEMSInstanceSourceDelta& Existing : SavedDeltas)
+	for (const FEMSInstanceSourceDelta& Existing : GetEffectiveSavedDeltas())
 	{
 		if (Existing.SourceId.IsValid())
 		{
@@ -949,7 +976,22 @@ bool AEMSInstancedSourceManager::CaptureDeltas(const ULevel* OnlyLevel)
 		{
 			return Left.SourceId.ToString() < Right.SourceId.ToString();
 		});
-	SavedDeltas = MoveTemp(NewDeltas);
+	if (!bCapturingForSave && IsEMSBusy())
+	{
+		DeferredSavedDeltas = MoveTemp(NewDeltas);
+		bHasDeferredSavedDeltas = true;
+		if (UWorld* World = GetWorld())
+		{
+			World->GetTimerManager().ClearTimer(DeferredDeltasTimer);
+			DeferredDeltasTimer = World->GetTimerManager().SetTimerForNextTick(this, &AEMSInstancedSourceManager::ApplyDeferredSavedDeltas);
+		}
+	}
+	else
+	{
+		SavedDeltas = MoveTemp(NewDeltas);
+		DeferredSavedDeltas.Reset();
+		bHasDeferredSavedDeltas = false;
+	}
 
 	// A captured source now matches what the save holds, so it is settled: a
 	// streaming restore queued for it must not reconcile it back to an older
@@ -980,7 +1022,7 @@ bool AEMSInstancedSourceManager::CaptureDeltas(const ULevel* OnlyLevel)
 			TEXT("EMS instanced capture completed with skipped sources. Each kept its previous delta. Manager=%s Skipped=%d Captured=%d"),
 			*GetPathName(),
 			SkippedSources,
-			SavedDeltas.Num());
+			GetEffectiveSavedDeltas().Num());
 	}
 
 	if (bReportResult)
@@ -1499,7 +1541,7 @@ void AEMSInstancedSourceManager::RestoreLoadedSources(const bool bRediscoverWorl
 	bool bHadSkippedSource = false;
 	int32 TotalChanges = 0;
 
-	if (SavedDeltas.Num() > MaxSourceDeltas)
+	if (GetEffectiveSavedDeltas().Num() > MaxSourceDeltas)
 	{
 		bHadSkippedSource = true;
 	}
@@ -1508,8 +1550,8 @@ void AEMSInstancedSourceManager::RestoreLoadedSources(const bool bRediscoverWorl
 		TMap<
 			FEMSInstanceSourceId,
 			const FEMSInstanceSourceDelta*> DeltasBySource;
-		DeltasBySource.Reserve(SavedDeltas.Num());
-		for (const FEMSInstanceSourceDelta& Delta : SavedDeltas)
+		DeltasBySource.Reserve(GetEffectiveSavedDeltas().Num());
+		for (const FEMSInstanceSourceDelta& Delta : GetEffectiveSavedDeltas())
 		{
 			DeltasBySource.FindOrAdd(Delta.SourceId, &Delta);
 		}
@@ -1603,7 +1645,7 @@ void AEMSInstancedSourceManager::RemoveSourcesInLevel(ULevel* Level)
 	}
 
 	TSet<FEMSInstanceSourceId> ChangedSources;
-	for (const FEMSInstanceSourceDelta& Delta : SavedDeltas)
+	for (const FEMSInstanceSourceDelta& Delta : GetEffectiveSavedDeltas())
 	{
 		ChangedSources.Add(Delta.SourceId);
 	}
@@ -1808,6 +1850,7 @@ void AEMSInstancedSourceManager::ActorPreSave_Implementation()
 			AEMSInstancedSourceManager* Manager = WeakThis.Get();
 			if (IsValid(Manager))
 			{
+				TGuardValue<bool> Saving(Manager->bCapturingForSave, true);
 				Manager->CaptureDeltas();
 			}
 		});
@@ -1815,6 +1858,8 @@ void AEMSInstancedSourceManager::ActorPreSave_Implementation()
 
 void AEMSInstancedSourceManager::ActorPreLoad_Implementation()
 {
+	DeferredSavedDeltas.Reset();
+	bHasDeferredSavedDeltas = false;
 	RestoredSources.Reset();
 	FailedRestoreSources.Reset();
 	LiveGameplayData.Reset();

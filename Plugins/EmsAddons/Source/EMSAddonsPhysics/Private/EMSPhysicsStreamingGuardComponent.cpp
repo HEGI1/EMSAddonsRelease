@@ -293,6 +293,7 @@ void UEMSPhysicsStreamingGuardComponent::SuspendOwnerPhysics()
 	bSuspended = !SuspendedBodies.IsEmpty();
 	if (bSuspended)
 	{
+		++StreamingHoldGeneration;
 		UE_LOG(
 			LogEMSAddonsPhysics,
 			Verbose,
@@ -304,6 +305,7 @@ void UEMSPhysicsStreamingGuardComponent::SuspendOwnerPhysics()
 
 void UEMSPhysicsStreamingGuardComponent::ResumeOwnerPhysics()
 {
+	if (bSuspended) ++StreamingHoldGeneration;
 	for (const FEMSSuspendedBody& Body : SuspendedBodies)
 	{
 		UPrimitiveComponent* Primitive = Body.Component.Get();
@@ -327,4 +329,18 @@ void UEMSPhysicsStreamingGuardComponent::ResumeOwnerPhysics()
 
 	SuspendedBodies.Reset();
 	bSuspended = false;
+}
+
+bool UEMSPhysicsStreamingGuardComponent::GetGravityBeforeStreamingHold(
+	const UPrimitiveComponent* Component, bool& OutGravity) const
+{
+	for (const FEMSSuspendedBody& Body : SuspendedBodies)
+	{
+		if (Body.Component.Get() == Component)
+		{
+			OutGravity = Body.bWasGravityEnabled;
+			return true;
+		}
+	}
+	return false;
 }

@@ -4,6 +4,7 @@
 #include "EMSAddonsAuthority.h"
 #include "EMSAddonsGameThread.h"
 #include "EMSWorldPartitionRuntimeSubsystem.h"
+#include "EMSWorldPartitionPlacedSubsystem.h"
 #include "EMSTypes.h"
 #include "Engine/World.h"
 
@@ -54,6 +55,11 @@ void AEMSWorldPartitionRuntimeManager::ActorPreSave_Implementation()
 			{
 				Subsystem->HandleManagerPreSave(Manager);
 			}
+			if (UEMSWorldPartitionPlacedSubsystem* Placed = EMSAddons::HasPersistenceAuthority(Manager)
+				? Manager->GetWorld()->GetSubsystem<UEMSWorldPartitionPlacedSubsystem>() : nullptr)
+			{
+				Placed->HandleManagerPreSave(Manager);
+			}
 		});
 }
 
@@ -65,6 +71,10 @@ void AEMSWorldPartitionRuntimeManager::ActorPreLoad_Implementation()
 	{
 		Subsystem->HandleManagerPreLoad(this);
 	}
+	if (EMSAddons::HasPersistenceAuthority(this))
+	{
+		if (UEMSWorldPartitionPlacedSubsystem* Placed = GetWorld()->GetSubsystem<UEMSWorldPartitionPlacedSubsystem>()) Placed->HandleManagerPreLoad(this);
+	}
 }
 
 void AEMSWorldPartitionRuntimeManager::ActorLoaded_Implementation()
@@ -72,5 +82,9 @@ void AEMSWorldPartitionRuntimeManager::ActorLoaded_Implementation()
 	if (UEMSWorldPartitionRuntimeSubsystem* Subsystem = ResolveRuntimeSubsystem(this))
 	{
 		Subsystem->HandleManagerLoaded(this);
+	}
+	if (EMSAddons::HasPersistenceAuthority(this))
+	{
+		if (UEMSWorldPartitionPlacedSubsystem* Placed = GetWorld()->GetSubsystem<UEMSWorldPartitionPlacedSubsystem>()) Placed->HandleManagerLoaded(this);
 	}
 }

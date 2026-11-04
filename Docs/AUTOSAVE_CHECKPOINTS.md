@@ -1,110 +1,65 @@
 # Autosave and Checkpoints
 
-`EMSAddonsAutosave` adds ready-to-use autosaves and gameplay checkpoints on top of Easy Multi Save. It uses the normal EMS save/load system and only decides when to save and how checkpoint restore should behave.
+Use **Autosave and Checkpoints** to request automatic EMS saves and provide gameplay checkpoints. It uses your normal EMS save slots.
 
-## Setup
+## Basic use
 
-Open **Project Settings → Easy Multi Save Addons → Autosave and Checkpoints** and choose which EMS data the addon should save, usually **Player** and **Level**.
+1. Open **Project Settings → Easy Multi Save Addons → Autosave and Checkpoints**.
+2. Choose the EMS data to save, usually **Player** and **Level**.
+3. Enable the autosave triggers you need, or call **Request Autosave** from gameplay.
+4. To use checkpoints, place an **EMS Checkpoint** and configure its trigger.
 
-**Enable Autosave** controls general autosave requests and automatic triggers. Checkpoints are independent: activating a checkpoint always saves because that save is the checkpoint.
+**Enable Autosave** controls ordinary autosave requests. Checkpoint activation is independent and always starts a checkpoint save.
 
 ## Checkpoints
 
 1. Place an **EMS Checkpoint** actor and size its Trigger volume.
 2. Enter the trigger or call **Activate Checkpoint**.
-3. The addon saves the configured EMS data and stores that checkpoint for the current EMS save slot.
-4. Call **Load Last Checkpoint** to restore it.
+3. Call **Load Last Checkpoint** when gameplay should return to it.
 
-After EMS restores the saved state, the player is placed at the **center of the checkpoint Trigger**. Restored rotation and other player state are retained.
+After loading, the EMS player is positioned at the checkpoint trigger's center. Checkpoints can restore across maps and streamed areas.
 
-Checkpoint loading can travel to another map. In streamed levels and World Partition, placement waits for the matching checkpoint to stream in when necessary.
+Checkpoint options:
 
-Checkpoint IDs are generated automatically. Editor copy/paste, **Copy Actors to Level** and ordinary duplication assign a new ID to the copy; **Move to Level** and PIE preserve the authored ID. Use **Regenerate Checkpoint ID** only when intentionally repairing an existing duplicate. Changing an established checkpoint's ID changes which saved checkpoint destination it matches.
+- **Activate On Player Overlap** — activate when a player enters the trigger.
+- **Trigger Once** — prevent repeat activation until reset.
+- **Display Name** — optional checkpoint name.
 
-### Checkpoint options
-
-- **Activate On Player Overlap** — activates when any player's pawn enters the Trigger. Activation runs on the server; with several players, the checkpoint saves whatever EMS is configured to save. After **Load Last Checkpoint**, the player that EMS restores (its configured player controller) is the one placed at the checkpoint.
-- **Trigger Once** — allows one activation until reset. The activation flag participates in normal EMS saves and loads. Disable for repeatable checkpoints. **Activate Checkpoint** returns false when the committed checkpoint already matches, so a checkpoint rebuilt by a respawn or a streamed-level reload does not report a second activation.
-- **Display Name** — optional saved checkpoint name.
-
-Use **Reset Checkpoint** to clear the checkpoint actor's session activation state.
-
-Startup and load-generated overlaps are ignored, so restoring inside a checkpoint does not immediately save again.
-After the initial overlap-settling tick, other players can activate even while EMS's configured controller has no pawn. Its late-spawned pawn still settles its startup overlap and any pending checkpoint placement before it can activate the trigger.
+**Reset Checkpoint** resets the actor's activation state. IDs are assigned automatically; use **Regenerate Checkpoint ID** only to resolve a duplicate. Changing an established ID breaks the match with previously saved checkpoint destinations.
 
 ## Autosaves
 
-Call **Request Autosave** whenever gameplay should request a normal EMS save.
+Call **Request Autosave** for gameplay-driven saves. Optional triggers include:
 
-Requests are combined while an EMS save is busy, streaming is not ready, a blocker is active, or the minimum save interval has not passed. **Request Autosave** returns false during an active EMS load; previously queued requests are canceled when loading begins, so no pending autosave carries across a restore.
+- **Periodic Autosave Interval** — set to `0` to disable.
+- **Autosave After Map Load** — save after entering a map.
+- **Autosave When Leaving Map** — save before map travel (disabled by default).
 
-Optional automatic triggers:
+Map-leave autosaves are synchronous and may cause a brief hitch. They skip the normal minimum interval but cannot run while another save/load, a blocker, or an unsafe streaming state prevents saving.
 
-- **Periodic Autosave Interval** — repeated autosaves; `0` disables them.
-- **Autosave After Map Load** — requests an autosave after loading a map.
-- **Autosave When Leaving Map** — saves immediately before normal map travel begins.
+Use **Add Autosave Blocker** and **Remove Autosave Blocker** to pause autosaves temporarily, such as during combat or cutscenes. Other autosave requests can be delayed or combined until saving is possible.
 
-### Autosave when leaving a map
+## Blueprint nodes and events
 
-Off by default. When enabled, the outgoing map is saved at Unreal's pre-load-map boundary, while its world and actors are still valid.
+Use **Get Game Instance Subsystem** to access **EMS Autosave Subsystem** for autosave requests, checkpoint loading, status queries, and events. **Activate Checkpoint**, **Reset Checkpoint**, and the session-activation queries belong to the **EMS Checkpoint** actor.
 
-This save runs **synchronously**, so expect a brief hitch during map travel. A queued asynchronous save is not safe here because `LoadMap` continues into world teardown before that task can be guaranteed to finish.
-
-Two differences from the other triggers are deliberate:
-
-- **The minimum save interval does not apply.** Leaving a map happens once, so throttling could discard the save the option exists to guarantee.
-- **It is not a request.** The other triggers queue through the pending-request path and may be combined or delayed; this one either saves immediately or is skipped because there is no later point in the outgoing world to retry.
-
-It is skipped, with a log line naming the reason, when an autosave blocker is active, another EMS save/load is running, no save slot is set, level streaming is not ready, or a checkpoint load is travelling to its restore map. That checkpoint case prevents the outgoing world from overwriting the slot that is about to be restored.
-
-The save uses the same configured **Player** and **Level** data flags as the other addon autosaves. EMS performs its normal save preparation, serialization, and Multi-Level merge; EMSAddons does not maintain a separate level archive or merge path.
-
-A successful save supersedes a loadable checkpoint exactly like any other normal **Save Game Actors** operation.
-
-Runtime interval nodes:
-
-- **Set Periodic Autosave Interval**
-- **Get Periodic Autosave Interval**
-
-## Autosave blockers
-
-Use named blockers when autosaving should temporarily wait, for example during combat or cinematics.
-
-- **Add Autosave Blocker**
-- **Remove Autosave Blocker**
-
-Saving can continue after the final blocker is removed.
-
-## Blueprint nodes
+Common nodes:
 
 - **Request Autosave**
-- **Activate Checkpoint**
-- **Load Last Checkpoint**
-- **Has Checkpoint**
-- **Get Current Checkpoint**
+- **Activate Checkpoint** / **Load Last Checkpoint**
+- **Has Checkpoint** / **Get Current Checkpoint**
 - **Reset Checkpoint**
-- **Add Autosave Blocker**
-- **Remove Autosave Blocker**
-- **Is Autosave Active**
-- **Is Autosave Blocked**
-- **Set Periodic Autosave Interval**
-- **Get Periodic Autosave Interval**
-- **Was Activated This Session** (EMS Checkpoint actor) — reads the checkpoint's saved activation state.
-- **Is Activation Pending** (EMS Checkpoint actor) — checks whether its activation is awaiting save completion.
+- **Add Autosave Blocker** / **Remove Autosave Blocker**
+- **Is Autosave Active** / **Is Autosave Blocked**
+- **Set Periodic Autosave Interval** / **Get Periodic Autosave Interval**
+- **Was Activated This Session** / **Is Activation Pending** (checkpoint actor)
 
-## Events
-
-The subsystem exposes **On Autosave Started**, **On Autosave Completed**, **On Autosave Failed**, **On Checkpoint Activated**, **On Checkpoint Committed**, **On Checkpoint Loaded**, and **On Checkpoint Load Failed**.
-
-The checkpoint actor also exposes **On Checkpoint Activated**.
-
-**On Autosave Started** is guarded against save re-entry. A normal asynchronous save owns its EMS task before the event is exposed, and the synchronous map-leave path reserves the subsystem state before broadcasting and revalidates the world, save slot, blocker state, streaming state, and EMS task state afterward. A save requested from the callback cannot start concurrently with the save that raised it.
-
-Callbacks may still deliberately change control flow. Switching save slots, adding a blocker, tearing down the world, or starting travel from **On Autosave Started** can cancel the not-yet-activated operation instead of letting it continue against stale assumptions. Event handlers are therefore best kept observational unless that cancellation is intentional.
+Events include **On Autosave Started**, **On Autosave Completed**, **On Autosave Failed**, **On Checkpoint Activated**, **On Checkpoint Committed**, **On Checkpoint Loaded**, and **On Checkpoint Load Failed**. The checkpoint actor also exposes **On Checkpoint Activated**.
 
 ## Important behavior
 
-- A checkpoint belongs to the current EMS save slot.
-- A later successful normal **Save Game Actors** call supersedes that checkpoint state. EMSAddons does not create a hidden historical snapshot slot.
-- Loading cancels pending addon autosaves so restored state is not immediately overwritten.
-- Normal EMS slots, users, manual saves, loading, streaming, and serialization remain unchanged.
+- Checkpoints belong to the current EMS save slot; they are not separate historical save files.
+- A later successful normal EMS save supersedes the loadable checkpoint.
+- Starting a load cancels pending addon autosaves so they cannot overwrite the restored game.
+- Startup overlaps do not immediately reactivate a checkpoint after loading.
+- Normal EMS save and load behavior remains available.

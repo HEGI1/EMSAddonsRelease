@@ -11,4 +11,13 @@ class FEMSAddonsWorldPartitionModule final : public IModuleInterface
 public:
 	virtual void StartupModule() override;
 	virtual void ShutdownModule() override;
+
+#if WITH_EDITOR
+private:
+	FDelegateHandle PropertyChangedHandle;
+	FDelegateHandle PreSaveHandle;
+	FDelegateHandle TransactedHandle;
+	void EnforcePlacement(UObject* Object);
+	void HandleObjectPropertyChanged(UObject* Object, struct FPropertyChangedEvent& Event);
+#endif
 };
