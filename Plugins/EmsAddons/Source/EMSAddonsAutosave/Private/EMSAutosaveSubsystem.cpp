@@ -102,7 +102,7 @@ void UEMSAutosaveSubsystem::Deinitialize()
 	// Shutting down mid-save: EMS remembers the current slot for the next start,
 	// so point it back at the last complete save. While the EMS task still runs EMS
 	// refuses the switch; the journal then lets the next start recover.
-	const bool bReturned = !bSaveActive || ReturnToPreviousSlot(ActivePreviousSlot, ActiveSaveSlot);
+	const bool bReturned = !bSaveActive || ReturnToPreviousSlot(ActivePreviousSlot, ActiveSaveSlot, EEMSSlotSwitch::LeaveWorld);
 	AutosaveBlockers.Empty();
 	PendingRequest.Reset();
 	PendingCheckpointActor.Reset();
@@ -463,8 +463,12 @@ void UEMSAutosaveSubsystem::StartSave(
 	// EMS stores the new current slot right away. Until the save ends, the journal names
 	// the slot it left, so a game that ends during the save does not continue from it.
 	BeginSaveJournal(TargetSlot, PreviousSlot);
-	if (!SwitchToSaveSlot(TargetSlot))
+	// With streaming, the target's stale Level data is removed so EMS keeps restoring streamed
+	// cells from memory in the new slot. Until the save writes it, the target is not loadable.
+	bool bRemovedTargetLevelData = false;
+	if (!SwitchToSaveSlot(TargetSlot, EEMSSlotSwitch::ContinueSession, &bRemovedTargetLevelData))
 	{
+		ReturnFromAbandonedSave(PreviousSlot, TargetSlot, bRemovedTargetLevelData);
 		ClearSaveJournal();
 		FailBeforeStart(TEXT("The save was not started because EMS did not switch to its target slot."));
 		return;
@@ -477,7 +481,7 @@ void UEMSAutosaveSubsystem::StartSave(
 	ActiveSaveTask = UEMSAsyncSaveGame::AsyncSaveActors(this, Settings->SaveDataFlags);
 	if (!ActiveSaveTask)
 	{
-		ReturnToPreviousSlot(PreviousSlot, SaveSlot);
+		ReturnFromAbandonedSave(PreviousSlot, SaveSlot, bRemovedTargetLevelData);
 		ClearSaveJournal();
 		if (Reason == ManualSaveReason)
 		{
@@ -531,6 +535,16 @@ void UEMSAutosaveSubsystem::StartSave(
 	if (!bSaveActive || ActiveSaveTask != SaveTask)
 	{
 		// World cleanup owns the slot in that case; a callback that started other work leaves it to that work.
+		// Nothing was written. A target left without its Level data is no save any more, unless it is
+		// current again (a later save writes it). EMS refuses the delete while other work runs.
+		if (bRemovedTargetLevelData)
+		{
+			if (UEMSObject* CurrentEMS = UEMSObject::Get(this);
+				CurrentEMS && !CurrentEMS->GetCurrentSaveGameName().Equals(SaveSlot, ESearchCase::IgnoreCase))
+			{
+				CurrentEMS->DeleteAllSaveDataForSlot(SaveSlot);
+			}
+		}
 		RestorePauseForAbandonedTask();
 		return;
 	}
@@ -552,7 +566,7 @@ void UEMSAutosaveSubsystem::StartSave(
 		const TWeakObjectPtr<AEMSCheckpoint> AbortedActor = ActiveCheckpointActor;
 		ResetActiveSaveState();
 		RestorePauseForAbandonedTask();
-		ReturnToPreviousSlot(PreviousSlot, SaveSlot);
+		ReturnFromAbandonedSave(PreviousSlot, SaveSlot, bRemovedTargetLevelData);
 		if (AbortedActor.IsValid())
 		{
 			AbortedActor->MarkActivationFailed();
@@ -1369,7 +1383,7 @@ void UEMSAutosaveSubsystem::HandleWorldCleanup(
 		// The slot is kept, never deleted: EMS reports a save's result one tick after it
 		// has written everything, on this world's timer, so a save that finished in the
 		// frame this world was torn down never reports at all and may well be complete.
-		ResetActiveSaveState(ReturnToPreviousSlot(PreviousSlot, InterruptedSlot));
+		ResetActiveSaveState(ReturnToPreviousSlot(PreviousSlot, InterruptedSlot, EEMSSlotSwitch::LeaveWorld));
 		if (InterruptedActor.IsValid())
 		{
 			InterruptedActor->MarkActivationFailed();

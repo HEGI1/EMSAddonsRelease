@@ -28,9 +28,12 @@ Save slots are ordinary EMS slots of one profile:
   <Profile>_Checkpoint[_<Name>]      checkpoint saves, named on the checkpoint actor
 
 A save switches the current EMS slot to its target and runs a normal EMS save there.
-EMS 1.86 keeps the running session (multi-level, streaming and World Partition memory)
-across that switch, so the new slot receives the complete session. Loading switches
-the slot the normal way, which makes EMS read the slot from disk.
+EMS keeps its multi-level memory across any switch, so the new slot receives the complete
+session. Streaming memory (World Partition cells, streamed sub-levels) is only kept by
+EMS 1.86 when the new slot has no Level data; switching to a slot with Level data stops
+memory restoration until the next load, like EMS 1.85. A save therefore removes the stale
+Level data of the slot it replaces before switching to it. Loading switches the slot the
+normal way, which makes EMS read the slot from disk.
 */
 
 namespace
@@ -246,8 +249,13 @@ FString UEMSAutosaveSubsystem::ResolveAutosaveTarget(const FString& Profile)
 	return Oldest;
 }
 
-bool UEMSAutosaveSubsystem::SwitchToSaveSlot(const FString& TargetSlot)
+bool UEMSAutosaveSubsystem::SwitchToSaveSlot(const FString& TargetSlot, const EEMSSlotSwitch Switch, bool* bOutRemovedLevelData)
 {
+	if (bOutRemovedLevelData)
+	{
+		*bOutRemovedLevelData = false;
+	}
+
 	UEMSObject* EMS = UEMSObject::Get(this);
 	const FString ValidTarget = FSavePaths::ValidateSaveName(TargetSlot);
 	if (!EMS || ValidTarget.IsEmpty())
@@ -259,29 +267,70 @@ bool UEMSAutosaveSubsystem::SwitchToSaveSlot(const FString& TargetSlot)
 		return true;
 	}
 
+	const bool bStreamingSession = EMS->AutoSaveLoadWorldPartition() || EMS->AutoSaveLoadStreamingLevels();
+	const bool bWorldPartitionRestoring = EMS->AlwaysAutoLoadWorldPartition();
+
 #if EMS_VERSION_NUMBER >= 186
-	// The new slot continues the running session, so the save writes all of it there.
-	EMS->SetCurrentSaveGameName(ValidTarget, true);
-#else
 	/*
-	EMS 1.85 has no way to keep the session when the slot changes. Set Current Save Game Name
-	clears load-from-memory: World Partition and level streaming stop restoring streamed-in
-	cells from memory until the next load, and a queued streaming save is dropped. Cells that
-	stream in after the switch can come back in their default state. EMS 1.86 keeps the session.
+	EMS 1.86 keeps restoring streamed cells and sub-levels from memory only when the new slot has
+	no Level data. Otherwise it clears memory loading like 1.85: World Partition reloads the whole
+	level from the new slot's disk data when the next cell streams in, and streamed sub-levels come
+	back unrestored. The save rewrites the Level file completely from session memory (EMS never
+	merges the old file), so the stale one of the slot being replaced holds nothing the save needs.
+	Removing it first lets the running session continue into the new slot.
 	*/
-	if (EMS->AutoSaveLoadWorldPartition() || EMS->HasAnyLevelStreaming())
+	if (Switch == EEMSSlotSwitch::ContinueSession && bStreamingSession)
 	{
-		LogMessage(FString::Printf(
-			TEXT("EMS 1.85: switching the save slot to %s clears memory loading. World Partition and level streaming stop auto-loading streamed cells until the next load. Use EMS 1.86 or later."),
-			*ValidTarget), true);
+		// A listed slot without Level data is no longer a loadable save. The caller deletes it
+		// if the save does not start. Nothing happens when there is no Level file.
+		if (bOutRemovedLevelData)
+		{
+			*bOutRemovedLevelData = EMS->DoesSaveSlotExist(ValidTarget);
+		}
+		// Refused only while an EMS task runs; then the switch below falls back to the 1.85 behavior.
+		EMS->DeleteDataFromSlot(ValidTarget, EDeleteSlotType::Level);
 	}
-	EMS->SetCurrentSaveGameName(ValidTarget);
 #endif
 
-	return EMS->GetCurrentSaveGameName().Equals(ValidTarget, ESearchCase::IgnoreCase);
+	EMS->SetCurrentSaveGameName(ValidTarget);
+	const bool bSwitched = EMS->GetCurrentSaveGameName().Equals(ValidTarget, ESearchCase::IgnoreCase);
+
+	if (bSwitched && bStreamingSession && Switch != EEMSSlotSwitch::LeaveWorld)
+	{
+		// World Partition reports whether memory restoration survived. Level streaming does not
+		// expose it; there the switch keeps it exactly when the slot had no Level data.
+		if (EMS->AutoSaveLoadWorldPartition())
+		{
+			if (bWorldPartitionRestoring && !EMS->AlwaysAutoLoadWorldPartition())
+			{
+				LogMessage(FString::Printf(
+					TEXT("Switching to %s stopped EMS from restoring World Partition cells from memory. The next streamed cell reloads the level from that slot's saved data."),
+					*ValidTarget), true);
+			}
+		}
+#if EMS_VERSION_NUMBER >= 186
+		else if (Switch == EEMSSlotSwitch::Return && EMS->DoesSaveSlotExist(ValidTarget))
+#else
+		else
+#endif
+		{
+			LogMessage(FString::Printf(
+				TEXT("Switching to %s stops EMS from restoring streamed levels from memory until the next load."),
+				*ValidTarget), true);
+		}
+	}
+
+	return bSwitched;
 }
 
-bool UEMSAutosaveSubsystem::ReturnToPreviousSlot(const FString& PreviousSlot, const FString& FailedSlot)
+bool UEMSAutosaveSubsystem::ReturnFromAbandonedSave(const FString& PreviousSlot, const FString& AbandonedSlot, const bool bRemovedLevelData)
+{
+	return bRemovedLevelData
+		? ReturnAndDiscardFailedSave(PreviousSlot, AbandonedSlot)
+		: ReturnToPreviousSlot(PreviousSlot, AbandonedSlot);
+}
+
+bool UEMSAutosaveSubsystem::ReturnToPreviousSlot(const FString& PreviousSlot, const FString& FailedSlot, const EEMSSlotSwitch Switch)
 {
 	UEMSObject* EMS = UEMSObject::Get(this);
 	if (!EMS
@@ -292,7 +341,7 @@ bool UEMSAutosaveSubsystem::ReturnToPreviousSlot(const FString& PreviousSlot, co
 		return true;
 	}
 
-	if (!SwitchToSaveSlot(PreviousSlot))
+	if (!SwitchToSaveSlot(PreviousSlot, Switch))
 	{
 		LogMessage(FString::Printf(TEXT("The save of %s failed and EMS did not switch back to %s."), *FailedSlot, *PreviousSlot), true);
 		return false;

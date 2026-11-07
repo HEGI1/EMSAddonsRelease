@@ -21,6 +21,17 @@ DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FEMSAutosaveEvent, FName, Reason);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FEMSCheckpointEvent, FEMSCheckpointRecord, Checkpoint);
 DECLARE_DYNAMIC_MULTICAST_DELEGATE_OneParam(FEMSSaveSlotEvent, const FString&, SlotName);
 
+/** Why the addon switches the current EMS slot. Decides how the running streaming session is treated. */
+enum class EEMSSlotSwitch : uint8
+{
+	/** Into a slot the save is about to write. The session continues there. */
+	ContinueSession,
+	/** Back to the slot the game was using, after a failed or abandoned save. */
+	Return,
+	/** Back to the previous slot while the world is going away. */
+	LeaveWorld,
+};
+
 /**
  * Game-instance service for autosaves, manual saves and checkpoints.
  *
@@ -249,10 +260,13 @@ protected:
 	FString ResolveAutosaveTarget(const FString& Profile);
 
 	/**
-	 * Makes TargetSlot the current EMS slot while keeping the running session (EMS 1.86+).
+	 * Makes TargetSlot the current EMS slot. For ContinueSession in a World Partition or level streaming
+	 * session, the stale Level data of an existing TargetSlot is removed first: EMS 1.86 keeps restoring
+	 * streamed cells from memory only when switching to a slot without Level data. bOutRemovedLevelData
+	 * reports that removal, after which TargetSlot no longer holds a loadable save until the save writes it.
 	 * Returns false when EMS refused the switch, for example because an EMS task is active.
 	 */
-	bool SwitchToSaveSlot(const FString& TargetSlot);
+	bool SwitchToSaveSlot(const FString& TargetSlot, EEMSSlotSwitch Switch, bool* bOutRemovedLevelData = nullptr);
 
 	/**
 	 * Copies the carried custom files (and, unless excluded, the checkpoint record) from SourceSlot into
@@ -364,8 +378,14 @@ private:
 	/**
 	 * Makes the slot from before a failed or abandoned save current again.
 	 * Returns false only when the game is still on FailedSlot because EMS refused the switch (an EMS task is running).
+	 * With World Partition or level streaming, EMS stops restoring streamed cells from memory until the next load.
 	 */
-	bool ReturnToPreviousSlot(const FString& PreviousSlot, const FString& FailedSlot);
+	bool ReturnToPreviousSlot(const FString& PreviousSlot, const FString& FailedSlot, EEMSSlotSwitch Switch = EEMSSlotSwitch::Return);
+	/**
+	 * Leaves a save that was abandoned before EMS wrote anything. A target whose Level data was removed
+	 * for the switch is no longer a loadable save and is deleted like a failed one; otherwise it stays.
+	 */
+	bool ReturnFromAbandonedSave(const FString& PreviousSlot, const FString& AbandonedSlot, bool bRemovedLevelData);
 	/**
 	 * ReturnToPreviousSlot for a save that EMS reported as failed after it may have
 	 * started writing, then deletes FailedSlot so it can never be listed or loaded.

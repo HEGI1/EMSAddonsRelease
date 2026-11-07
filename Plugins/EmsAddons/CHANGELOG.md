@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.2.1 - 2026-11-07
+
+### Fixed
+
+- **Autosave and Checkpoints:** works with the final Easy Multi Save 1.86, which changed how slot switches treat streaming. With World Partition or level streaming, a save that replaces an existing slot first deletes that slot's old Level data, so streamed cells keep restoring from memory after the save. Until the save finishes, that slot cannot be loaded.
+
 ## 1.2.0 - 2026-11-07
 
 ### Added

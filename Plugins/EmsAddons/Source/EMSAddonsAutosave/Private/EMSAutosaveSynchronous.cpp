@@ -46,7 +46,9 @@ bool UEMSAutosaveSubsystem::BeginSynchronousAutosave(
 		return false;
 	}
 	BeginSaveJournal(TargetSlot, CurrentSlot);
-	if (!SwitchToSaveSlot(TargetSlot))
+	// The outgoing world ends right after this save, so its streaming memory does not matter
+	// and the target keeps its old save until EMS overwrites it.
+	if (!SwitchToSaveSlot(TargetSlot, EEMSSlotSwitch::LeaveWorld))
 	{
 		ClearSaveJournal();
 		return false;
@@ -173,7 +175,7 @@ void UEMSAutosaveSubsystem::AbortSynchronousAutosave()
 	const FString FailedSlot = ActiveSaveSlot;
 
 	// Nothing was written, so the previous slot is still the newest complete save.
-	ReturnToPreviousSlot(ActivePreviousSlot, FailedSlot);
+	ReturnToPreviousSlot(ActivePreviousSlot, FailedSlot, EEMSSlotSwitch::LeaveWorld);
 	if (!FailedReason.IsNone())
 	{
 		OnAutosaveFailed.Broadcast(FailedReason);
