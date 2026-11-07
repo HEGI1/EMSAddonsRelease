@@ -21,13 +21,14 @@ enum class ELevelStreamingState : uint8;
  *
  * The guard reacts to the two streaming edges instead of polling. It suspends
  * only when the level that is actually holding the owner up is about to become
- * invisible, or when nothing at all is loaded below the owner at Begin Play in a
- * world that actually streams (World Partition streaming or a conventional
- * streamed sublevel) - a static world has nothing to explain missing support
- * with, so it never runs that startup check. Streaming events resume it when
- * usable support is back below the owner, ignoring departing collision. Ordinary
- * gameplay - debris falling into a pit, an object knocked off a ledge - never
- * reaches either condition.
+ * invisible, or when support is missing below the owner at Begin Play while the
+ * world there is still streaming in (World Partition streaming or a conventional
+ * streamed sublevel) - a static world, or a fully loaded one, has nothing to
+ * explain missing support with, so the owner is left to fall. Streaming events
+ * resume it when usable support is back below the owner, ignoring departing
+ * collision, or when the world below has finished loading. Ordinary gameplay -
+ * debris falling into a pit, an object knocked off a ledge, a body spawned over
+ * a chasm - never reaches either condition.
  *
  * Add it to any actor with simulating primitive components. It is a gameplay
  * safeguard rather than persistence: it runs in every net mode, it is not
@@ -78,9 +79,29 @@ protected:
 	virtual void BeginPlay() override;
 	virtual void EndPlay(const EEndPlayReason::Type EndPlayReason) override;
 
-	/** Isolated so automation can exercise the guard without a streaming world. */
+	/**
+	 * Isolated so automation can exercise the guard without a streaming world.
+	 *
+	 * Both probes cast several columns across the footprint of every simulating
+	 * body rather than one line from the actor's centre, so a wide or overhanging
+	 * body is judged by where it actually rests. HasAnySupportBelow needs loaded
+	 * collision below every column; IsSupportedByLevel needs one column in contact
+	 * with the level.
+	 */
 	virtual bool HasAnySupportBelow() const;
 	virtual bool IsSupportedByLevel(const ULevel* Level) const;
+
+	/**
+	 * True when nothing below the owner can still be waiting to stream in.
+	 *
+	 * Missing support is only the guard's business while the world under the
+	 * owner is unloaded. Once it is loaded, missing support is a real void - a
+	 * pit, a chasm, the edge of the map - and the owner must fall into it like
+	 * any other physics body. World Partition answers this for the owner's
+	 * location. Conventional streamed sublevels carry no location, so any of them
+	 * that is not fully visible keeps the answer at "not loaded".
+	 */
+	virtual bool IsWorldBelowOwnerLoaded() const;
 
 	void EvaluateInitialSupport();
 	void SuspendOwnerPhysics();
@@ -103,7 +124,19 @@ private:
 	bool bSuspended = false;
 	uint64 StreamingHoldGeneration = 0;
 
-	bool TraceBelowOwner(double Reach, FHitResult& OutHit, bool bIgnoreDepartingLevels = false) const;
+	/** One vertical probe line: where it starts and the Z its reach is measured from. */
+	struct FEMSSupportProbeColumn
+	{
+		FVector Start = FVector::ZeroVector;
+		double ReachOriginZ = 0.0;
+	};
+
+	void GatherSupportProbeColumns(TArray<FEMSSupportProbeColumn>& OutColumns) const;
+	bool TraceSupportColumn(
+		const FEMSSupportProbeColumn& Column,
+		double Reach,
+		FHitResult& OutHit,
+		bool bIgnoreDepartingLevels) const;
 
 	void HandleLevelBeginMakingInvisible(
 		UWorld* InWorld,

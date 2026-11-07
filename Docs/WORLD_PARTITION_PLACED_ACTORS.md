@@ -9,7 +9,7 @@ Use **EMS World Partition Placed Component** for editor-placed actors that shoul
 3. Add **EMS World Partition Placed Component** in the editor, either to the class or to the placed actor.
 4. Save the map, then save and load normally through EMS.
 
-Use **one component per actor**. Adding it at runtime does not enroll an actor. The component automatically sets **Is Spatially Loaded** to false; leave that setting disabled.
+Use **one component per actor**. Adding it at runtime does not enroll an actor.
 
 ## Blueprint nodes
 
@@ -17,6 +17,8 @@ Get **EMS World Partition Placed Subsystem** with **Get World Subsystem** to cal
 
 - **Is Placed Actor Managed** — checks whether an actor is managed.
 - **Get Managed Placed Actors** — returns currently active managed placed actors, not dormant records.
+
+Call **Get Placement Id** on the component for the actor's persistent ID.
 
 The shared **Is Managed Actor Removal In Progress** node can be used in **End Play** to distinguish automatic streaming removal from gameplay destruction. It works with both placed and runtime actors.
 
@@ -36,3 +38,11 @@ The shared **Is Managed Actor Removal In Progress** node can be used in **End Pl
 ## Limitations
 
 Only main-world, persistent-level placements are supported. Runtime Data Layers, Level Instances, HLOD ownership, and conventional streamed sublevels are outside this feature's scope.
+
+## Settings
+
+**EMS World Partition Placed Component** has no settings of its own.
+
+| Setting | Default | Meaning |
+| --- | --- | --- |
+| **Is Spatially Loaded** (on the actor) | Off, enforced | The component turns it off automatically. Leave it off; the addon streams the actor by its current location. |

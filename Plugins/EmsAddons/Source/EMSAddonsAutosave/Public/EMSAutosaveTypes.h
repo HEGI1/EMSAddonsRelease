@@ -10,7 +10,11 @@ struct EMSADDONSAUTOSAVE_API FEMSCheckpointRecord
 {
 	GENERATED_BODY()
 
-	static constexpr int32 CurrentVersion = 1;
+	/** Version 2: checkpoints are stored in their own EMS slot (Save Slot). */
+	static constexpr int32 CurrentVersion = 2;
+
+	/** Version 1 (1.1): the checkpoint is the slot that holds the record. Migrated when read. */
+	static constexpr int32 LegacyVersion = 1;
 
 	/** Serialized checkpoint-record version used to reject incompatible metadata. */
 	UPROPERTY(SaveGame, VisibleAnywhere, BlueprintReadOnly, Category = "EMS Addons|Autosave and Checkpoints|Record")
@@ -32,10 +36,14 @@ struct EMSADDONSAUTOSAVE_API FEMSCheckpointRecord
 	UPROPERTY(SaveGame, VisibleAnywhere, BlueprintReadOnly, Category = "EMS Addons|Autosave and Checkpoints|Record")
 	FDateTime ActivatedAt;
 
-	/** Returns true when this record contains a supported version, checkpoint ID, and world. */
+	/** EMS slot that holds this checkpoint's save. */
+	UPROPERTY(SaveGame, VisibleAnywhere, BlueprintReadOnly, Category = "EMS Addons|Autosave and Checkpoints|Record")
+	FString SaveSlot;
+
+	/** Returns true when this record contains a supported version, checkpoint ID, world and slot. */
 	bool IsValid() const
 	{
-		return Version == CurrentVersion && CheckpointId.IsValid() && !World.IsNull();
+		return Version == CurrentVersion && CheckpointId.IsValid() && !World.IsNull() && !SaveSlot.IsEmpty();
 	}
 
 	/** Returns true when both records identify the same checkpoint actor in the same world. */

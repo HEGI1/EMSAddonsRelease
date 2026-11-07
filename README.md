@@ -1,6 +1,6 @@
 # Easy Multi Save Addons
 
-**Current Version: 1.1.2**
+**Current Version: 1.2.0**
 
 **Easy Multi Save Addons** provide ready-made extensions for more specialized Unreal Engine workflows that would otherwise require project-specific Blueprint logic. They build directly on Easy Multi Save, reusing its save system while keeping the core plugin lean and focused.
 
@@ -8,7 +8,7 @@
 
 | Addon | Use it for | Basic use |
 | --- | --- | --- |
-| **Autosave and Checkpoints** | Automatic saves and gameplay checkpoints. | Configure the settings, call **Request Autosave**, or place an **EMS Checkpoint**. |
+| **Autosave and Checkpoints** | Automatic and manual saves, save slots, and gameplay checkpoints. | Configure the settings, call **Request Autosave**, or place an **EMS Checkpoint**. |
 | **Actor Spawner** | Runtime actors that must belong to a specific streamed level or World Partition cell. | Place an **EMS Actor Spawner** there and call **Spawn Actor**. |
 | **World Partition Placed Actors** | Placed actors that move freely and follow streaming at their current location. | Author an **EMS World Partition Placed Component** on a placed actor; non-spatial placement is enforced. |
 | **World Partition Runtime Actors** | Runtime actors that should follow World Partition streaming based on their current location. | Call **Spawn World Partition Runtime Actor**. Nothing needs to be placed. |
@@ -37,7 +37,7 @@ See the [Changelog](Plugins/EmsAddons/CHANGELOG.md) for release notes and recent
 ## Requirements
 
 - Unreal Engine 5.8
-- Easy Multi Save 1.85 or compatible newer release
+- Easy Multi Save 1.85 or compatible newer release; 1.86 for Autosave and Checkpoints with World Partition or level streaming
 - Unreal `GeometryCollectionPlugin`
 
 Easy Multi Save is a separate dependency and is not included.

@@ -22,136 +22,47 @@ bool EMSCheckpoint::IsSameWorld(const UWorld* World, const FSoftObjectPath& Worl
 	return World && !WorldPath.IsNull() && GetWorldAssetPath(World).GetAssetPath() == WorldPath.GetAssetPath();
 }
 
-bool EMSCheckpoint::IsCurrentGeneration(const UEMSCheckpointSaveGame* Save)
+bool EMSCheckpoint::IsLoadableLegacyRecord(const UEMSCheckpointSaveGame* Save)
 {
 	return Save
 		&& Save->bHasCheckpoint
-		&& Save->LatestCheckpoint.IsValid()
+		&& Save->LatestCheckpoint.Version == FEMSCheckpointRecord::LegacyVersion
+		&& Save->LatestCheckpoint.CheckpointId.IsValid()
+		&& !Save->LatestCheckpoint.World.IsNull()
 		&& Save->CheckpointGeneration.IsValid()
 		&& Save->CheckpointGeneration == Save->SaveGeneration;
 }
 
-bool EMSCheckpoint::BeginGeneration(
-	UEMSCheckpointSaveGame* Save,
-	const FGuid& Generation,
-	TFunctionRef<bool()> WriteToDisk)
+bool EMSCheckpoint::ResolveRecord(
+	const UEMSCheckpointSaveGame* Save,
+	const FString& HolderSlot,
+	FEMSCheckpointRecord& OutRecord)
 {
-	if (!Save || !Generation.IsValid() || Generation == Save->SaveGeneration)
+	OutRecord = FEMSCheckpointRecord();
+	if (!Save || !Save->bHasCheckpoint)
 	{
 		return false;
 	}
 
-	const bool bPreviousHasCheckpoint = Save->bHasCheckpoint;
-	const FEMSCheckpointRecord PreviousRecord = Save->LatestCheckpoint;
-	const FGuid PreviousSaveGeneration = Save->SaveGeneration;
-	const FGuid PreviousCheckpointGeneration = Save->CheckpointGeneration;
+	FEMSCheckpointRecord Record = Save->LatestCheckpoint;
 
-	// A record already known to be stale must never become the fallback of a new
-	// checkpoint attempt. Clear it as part of the reservation transaction. If the
-	// reservation write itself fails, the exact previous metadata is restored.
-	if (Save->bHasCheckpoint && !IsCurrentGeneration(Save))
+	// Loading a soft object path in PIE adds the PIE prefix to it. Records always store and
+	// compare the plain world path (see GetWorldAssetPath), so remove it again.
+	if (!Record.World.IsNull())
 	{
-		Save->bHasCheckpoint = false;
-		Save->LatestCheckpoint = FEMSCheckpointRecord();
-		Save->CheckpointGeneration.Invalidate();
+		Record.World = FSoftObjectPath(UWorld::RemovePIEPrefix(Record.World.ToString()));
 	}
 
-	Save->SaveGeneration = Generation;
-	if (WriteToDisk())
+	if (IsLoadableLegacyRecord(Save))
 	{
-		return true;
+		Record.Version = FEMSCheckpointRecord::CurrentVersion;
+		Record.SaveSlot = HolderSlot;
 	}
 
-	Save->bHasCheckpoint = bPreviousHasCheckpoint;
-	Save->LatestCheckpoint = PreviousRecord;
-	Save->SaveGeneration = PreviousSaveGeneration;
-	Save->CheckpointGeneration = PreviousCheckpointGeneration;
-	return false;
-}
-
-bool EMSCheckpoint::CommitRecord(
-	UEMSCheckpointSaveGame* Save,
-	const FEMSCheckpointRecord& Record,
-	const FGuid& Generation,
-	TFunctionRef<bool()> WriteToDisk)
-{
-	// Committing a generation the slot never reserved would claim a pairing that
-	// no EMS save stands behind.
-	if (!Save
-		|| !Record.IsValid()
-		|| !Generation.IsValid()
-		|| Generation != Save->SaveGeneration)
+	if (!Record.IsValid())
 	{
 		return false;
 	}
-
-	const bool bPreviousHasCheckpoint = Save->bHasCheckpoint;
-	const FEMSCheckpointRecord PreviousRecord = Save->LatestCheckpoint;
-	const FGuid PreviousGeneration = Save->CheckpointGeneration;
-	Save->bHasCheckpoint = true;
-	Save->LatestCheckpoint = Record;
-	Save->CheckpointGeneration = Generation;
-	if (WriteToDisk())
-	{
-		return true;
-	}
-
-	Save->bHasCheckpoint = bPreviousHasCheckpoint;
-	Save->LatestCheckpoint = PreviousRecord;
-	Save->CheckpointGeneration = PreviousGeneration;
-	return false;
-}
-
-bool EMSCheckpoint::AbandonGeneration(
-	UEMSCheckpointSaveGame* Save,
-	TFunctionRef<bool()> WriteToDisk)
-{
-	if (!Save || Save->SaveGeneration == Save->CheckpointGeneration)
-	{
-		return Save != nullptr;
-	}
-
-	const FGuid ReservedGeneration = Save->SaveGeneration;
-	Save->SaveGeneration = Save->CheckpointGeneration;
-	if (WriteToDisk())
-	{
-		return true;
-	}
-
-	Save->SaveGeneration = ReservedGeneration;
-	return false;
-}
-
-bool EMSCheckpoint::ClearCurrentCheckpoint(
-	UEMSCheckpointSaveGame* Save,
-	TFunctionRef<bool()> WriteToDisk)
-{
-	if (!Save)
-	{
-		return false;
-	}
-	if (!IsCurrentGeneration(Save))
-	{
-		return true;
-	}
-
-	const bool bPreviousHasCheckpoint = Save->bHasCheckpoint;
-	const FEMSCheckpointRecord PreviousRecord = Save->LatestCheckpoint;
-	const FGuid PreviousSaveGeneration = Save->SaveGeneration;
-	const FGuid PreviousCheckpointGeneration = Save->CheckpointGeneration;
-
-	Save->bHasCheckpoint = false;
-	Save->LatestCheckpoint = FEMSCheckpointRecord();
-	Save->SaveGeneration.Invalidate();
-	Save->CheckpointGeneration.Invalidate();
-	if (WriteToDisk())
-	{
-		return true;
-	}
-
-	Save->bHasCheckpoint = bPreviousHasCheckpoint;
-	Save->LatestCheckpoint = PreviousRecord;
-	Save->SaveGeneration = PreviousSaveGeneration;
-	Save->CheckpointGeneration = PreviousCheckpointGeneration;
-	return false;
+	OutRecord = Record;
+	return true;
 }

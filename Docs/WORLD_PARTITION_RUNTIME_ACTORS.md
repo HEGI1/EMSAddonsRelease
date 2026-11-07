@@ -16,6 +16,7 @@ No placed spawner is needed. The spawn node fails if the location is not yet cov
 - **Get World Partition Runtime Actors** — returns currently active managed actors.
 - **Is World Partition Runtime Actor Managed** — checks whether an actor is managed.
 - **Is Managed Actor Removal In Progress** — use in **End Play** to distinguish streaming removal from gameplay destruction. Also supports placed actors.
+- **Get Managed Runtime Actor Count** / **Get Dormant Runtime Actor Count** — diagnostic counts of active and unloaded records.
 
 ## Important behavior
 
@@ -33,3 +34,7 @@ No placed spawner is needed. The spawn node fails if the location is not yet cov
 ## Alternatives
 
 Use [Actor Spawner](ACTOR_SPAWNER.md) if a runtime actor must belong to a specific streamed level or cell. Use normal Easy Multi Save if it can stay persistent without location-based World Partition streaming.
+
+## Settings
+
+Runtime actors have no addon settings. For NPCs, set **Auto Possess AI** on the Pawn class as described above.

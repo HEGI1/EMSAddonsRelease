@@ -7,20 +7,23 @@
 
 bool UEMSAutosaveSubsystem::BeginSynchronousAutosave(
 	const FName Reason,
-	const FString& SaveSlot)
+	const FString& CurrentSlot,
+	FString& OutTargetSlot)
 {
+	OutTargetSlot.Reset();
 	if (bIsShuttingDown
 		|| bSaveActive
 		|| ActiveSaveTask
 		|| IsCheckpointLoadInProgress()
-		|| SaveSlot.IsEmpty())
+		|| IsSaveLoadInProgress()
+		|| CurrentSlot.IsEmpty())
 	{
 		return false;
 	}
 
-	// A checkpoint request carries activation state and generation semantics that
-	// a map-leave convenience save must never supersede. An ordinary pending save
-	// is older than the outgoing-map snapshot and can safely be replaced by it.
+	// A checkpoint request carries activation state that a map-leave convenience
+	// save must never supersede. An ordinary pending save is older than the
+	// outgoing-map snapshot and can safely be replaced by it.
 	if (PendingRequest.IsCheckpoint())
 	{
 		return false;
@@ -32,23 +35,47 @@ bool UEMSAutosaveSubsystem::BeginSynchronousAutosave(
 			false);
 	}
 
+	// Same target, carried files and slot switch as an asynchronous autosave.
+	const FString TargetSlot = ResolveAutosaveTarget(GetSlotProfile(CurrentSlot));
+	UEMSObject* EMS = UEMSObject::Get(this);
+	if (!EMS
+		|| TargetSlot.IsEmpty()
+		|| !InvalidateCheckpointStoredIn(TargetSlot, true)
+		|| !CarryCustomFiles(CurrentSlot, TargetSlot))
+	{
+		return false;
+	}
+	BeginSaveJournal(TargetSlot, CurrentSlot);
+	if (!SwitchToSaveSlot(TargetSlot))
+	{
+		ClearSaveJournal();
+		return false;
+	}
+	const FString SaveSlot = EMS->GetCurrentSaveGameName();
+
 	// Reserve before exposing the start callback. RequestAutosave may be called by
 	// a listener, but TryStartPendingSave then sees bSaveActive and only queues it.
 	bSaveActive = true;
 	ActiveReason = Reason;
 	ActiveSaveSlot = SaveSlot;
+	ActivePreviousSlot = CurrentSlot;
 	bActiveRequestIsCheckpoint = false;
 	ActiveCheckpoint = FEMSCheckpointRecord();
-	ActiveCheckpointGeneration.Invalidate();
 	ActiveCheckpointActor.Reset();
 
 	OnAutosaveStarted.Broadcast(ActiveReason);
 
-	// World cleanup or another callback may have invalidated the reservation.
-	return bSaveActive
+	// World cleanup (which also returns to the previous slot) or another callback
+	// may have invalidated the reservation.
+	if (bSaveActive
 		&& ActiveSaveTask == nullptr
 		&& ActiveReason == Reason
-		&& ActiveSaveSlot.Equals(SaveSlot, ESearchCase::IgnoreCase);
+		&& ActiveSaveSlot.Equals(SaveSlot, ESearchCase::IgnoreCase))
+	{
+		OutTargetSlot = SaveSlot;
+		return true;
+	}
+	return false;
 }
 
 void UEMSAutosaveSubsystem::CompleteSynchronousAutosave(
@@ -71,6 +98,8 @@ void UEMSAutosaveSubsystem::CompleteSynchronousAutosave(
 	}
 	else
 	{
+		// The failed slot may hold a partial save. Continue from the last complete one.
+		ReturnAndDiscardFailedSave(ActivePreviousSlot, CompletedSlot);
 		OnAutosaveFailed.Broadcast(CompletedReason);
 	}
 
@@ -82,14 +111,8 @@ void UEMSAutosaveSubsystem::CompleteSynchronousAutosave(
 		|| ActiveReason != CompletedReason
 		|| !ActiveSaveSlot.Equals(CompletedSlot, ESearchCase::IgnoreCase))
 	{
-		// The reservation is gone, so the EMS broadcast below is skipped, but the
-		// slot was still rewritten. A checkpoint paired with the previous slot
-		// state must not stay current, which that broadcast would have ensured.
-		if (bSuccess)
-		{
-			AddonSaveSlotAwaitingActorsSaved.Reset();
-			ClearCheckpointAfterSupersedingSave(CompletedSlot);
-		}
+		// The reservation is gone, so the EMS broadcast below is skipped.
+		AddonSaveSlotAwaitingActorsSaved.Reset();
 		return;
 	}
 
@@ -148,6 +171,9 @@ void UEMSAutosaveSubsystem::AbortSynchronousAutosave()
 
 	const FName FailedReason = ActiveReason;
 	const FString FailedSlot = ActiveSaveSlot;
+
+	// Nothing was written, so the previous slot is still the newest complete save.
+	ReturnToPreviousSlot(ActivePreviousSlot, FailedSlot);
 	if (!FailedReason.IsNone())
 	{
 		OnAutosaveFailed.Broadcast(FailedReason);

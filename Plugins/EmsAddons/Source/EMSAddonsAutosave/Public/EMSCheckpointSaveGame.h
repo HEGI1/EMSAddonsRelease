@@ -6,7 +6,12 @@
 #include "EMSAutosaveTypes.h"
 #include "EMSCheckpointSaveGame.generated.h"
 
-/** Internal EMS custom-save object that stores checkpoint metadata per EMS save slot. */
+/**
+ * Internal slot-bound EMS custom save naming the checkpoint that belongs to a slot's progress.
+ *
+ * A checkpoint save writes it into its own checkpoint slot. Every later addon save carries it
+ * into the slot it writes, so any save knows which checkpoint Load Last Checkpoint returns to.
+ */
 UCLASS()
 class EMSADDONSAUTOSAVE_API UEMSCheckpointSaveGame : public UEMSCustomSaveGame
 {
@@ -15,26 +20,22 @@ class EMSADDONSAUTOSAVE_API UEMSCheckpointSaveGame : public UEMSCustomSaveGame
 public:
 	UEMSCheckpointSaveGame();
 
-	/** True when this slot contains a committed checkpoint record. */
+	/** True when this slot's progress has a checkpoint. */
 	UPROPERTY(SaveGame, VisibleAnywhere, BlueprintReadOnly, Category = "EMS Addons|Autosave and Checkpoints|Metadata")
 	bool bHasCheckpoint = false;
 
-	/** Latest committed checkpoint for this EMS save slot. */
+	/** The checkpoint of this slot's progress. Its Save Slot names the slot holding the checkpoint save. */
 	UPROPERTY(SaveGame, VisibleAnywhere, BlueprintReadOnly, Category = "EMS Addons|Autosave and Checkpoints|Metadata")
 	FEMSCheckpointRecord LatestCheckpoint;
 
 	/**
-	 * Generation of the newest EMS save started by the checkpoint system for this slot.
-	 * A generation is reserved before the EMS save begins so an interrupted two-file
-	 * checkpoint commit can be detected instead of pairing stale metadata with newer state.
+	 * Read from 1.1 saves only. A 1.1 checkpoint lives in the player's own slot and is still
+	 * loadable while these two match. Version 2 records clear them.
 	 */
-	UPROPERTY(SaveGame, VisibleAnywhere, BlueprintReadOnly, Category = "EMS Addons|Autosave and Checkpoints|Metadata")
+	UPROPERTY(SaveGame)
 	FGuid SaveGeneration;
 
-	/**
-	 * Generation for which LatestCheckpoint was committed.
-	 * It must match SaveGeneration before the checkpoint record is considered loadable.
-	 */
-	UPROPERTY(SaveGame, VisibleAnywhere, BlueprintReadOnly, Category = "EMS Addons|Autosave and Checkpoints|Metadata")
+	/** Read from 1.1 saves only. See Save Generation. */
+	UPROPERTY(SaveGame)
 	FGuid CheckpointGeneration;
 };

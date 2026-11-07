@@ -8,7 +8,7 @@ Use **EMS Instance Manager** to save gameplay changes to instanced meshes and pa
 2. Change supported instances during gameplay.
 3. Save and load normally through EMS.
 
-No registration is required. Add the `EMS.IgnoreInstances` tag to an actor or component to exclude its instances.
+No registration is required. To exclude instances, see [Settings](#settings).
 
 ## Blueprint nodes
 
@@ -57,3 +57,11 @@ Not supported: ISM/HISM components on runtime-spawned actors, Actor Foliage, Lan
 - A source whose authored layout changes substantially between game versions may no longer match an older saved instance change.
 - World Partition instance saves made before version **0.5.4** are incompatible with the current identity format; make a fresh save after upgrading.
 - Persistence is server-authoritative. Replication is the project's responsibility.
+
+## Settings
+
+**EMS Instance Manager** has no settings.
+
+| Tag | Where | Meaning |
+| --- | --- | --- |
+| `EMS.IgnoreInstances` | Actor or component tag | Excludes that actor's or component's instances from saving. |

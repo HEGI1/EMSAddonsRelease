@@ -58,5 +58,25 @@ public:
 	UPROPERTY(Config, EditAnywhere, Category = "Automatic Triggers")
 	bool bAutosaveWhenLeavingMap = false;
 
+	/** Upper limit for Autosave Slot Count. */
+	static constexpr int32 MaxAutosaveSlots = 10;
+
+	/**
+	 * Number of rotating autosave slots per profile.
+	 * Zero: autosaves write the profile slot itself ("<Profile>"), as in 1.1.
+	 * N: autosaves write "<Profile>_Autosave_0" to "<Profile>_Autosave_<N-1>", replacing the oldest.
+	 * Every autosave makes its slot the current EMS slot, so a normal EMS load continues from the newest save.
+	 */
+	UPROPERTY(Config, EditAnywhere, Category = "Save Slots", meta = (ClampMin = "0", ClampMax = "10", UIMin = "0", UIMax = "10"))
+	int32 AutosaveSlotCount = 0;
+
+	/**
+	 * Slot-bound EMS custom save files (their File Name) that every addon save carries from the previous slot
+	 * into the slot it writes, so game data kept in custom saves stays with the progress.
+	 * Can be extended at runtime with Add Carried Custom File.
+	 */
+	UPROPERTY(Config, EditAnywhere, Category = "Save Slots")
+	TArray<FString> CarriedCustomFiles;
+
 	virtual FName GetCategoryName() const override { return TEXT("Easy Multi Save Addons"); }
 };

@@ -42,6 +42,13 @@ public:
 	FText DisplayName;
 
 	/**
+	 * Names the EMS slot this checkpoint saves into: "<Profile>_Checkpoint" when empty, otherwise
+	 * "<Profile>_Checkpoint_<Checkpoint Slot Name>". Checkpoints sharing a name replace each other's save.
+	 */
+	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "EMS Addons|Autosave and Checkpoints|Identity")
+	FString CheckpointSlotName;
+
+	/**
 	 * Automatically activates this checkpoint when a player's pawn genuinely enters the Trigger volume after
 	 * startup/loading. Any player-controlled pawn counts; activation itself only happens on the server.
 	 */

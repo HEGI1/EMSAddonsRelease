@@ -22,6 +22,7 @@ Spawned actors do **not** need the EMS Actor Save Interface. The spawner saves t
 - **Was Spawned By This** — checks spawner ownership.
 - **Has Spawned Actor Record** — checks whether a saved ID is still registered.
 - **Has Finished Restoring** / **Get Last Restore Result** — check restore status.
+- **Get Spawner Identity** — returns the spawner's persistent ID, for diagnostics.
 
 ## Events
 
@@ -34,8 +35,15 @@ Use **On Actor Restored** to rebuild relationships between spawned actors when n
 
 - The spawner controls where its actors stream in and out. It is spatially loaded by default in World Partition.
 - **Spawn Actor** can fail during an EMS save or load. Avoid ordinary gameplay spawns while EMS is busy; the spawner's own restore callbacks can perform reentrant work during restoration.
-- **Max Spawned Actors** limits how many records the spawner can manage.
 - Duplicating a spawner in the editor gives the copy a new identity. Moving it to another level preserves its identity.
 - Attachment to the spawner is restored. Attachments between spawned actors should be re-established after restoration.
 - Restored actors receive normal EMS load callbacks. Check **Get Last Restore Result** before depending on data from a failed restore.
 - Spawning, removal, and restoration are server-authoritative; replication is the project's responsibility.
+
+## Settings
+
+**EMS Actor Spawner**
+
+| Setting | Default | Meaning |
+| --- | --- | --- |
+| **Max Spawned Actors** | 1024 | Maximum number of actor records this spawner manages. Lowering it at runtime stops saving and restoring records past the new limit. |

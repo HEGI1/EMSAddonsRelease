@@ -19,7 +19,15 @@ Call these nodes on the EMS Geometry Collection Actor.
 
 ## Important behavior
 
-- By default, restoration requires the same Geometry Collection asset and hierarchy. **Asset Mismatch Policy → Allow If Hierarchy Matches** allows a different asset only when the hierarchy and authored transforms match.
+- By default, restoration requires the same Geometry Collection asset and hierarchy. **Asset Mismatch Policy** can relax this.
 - Restoration can wait briefly for Chaos to become ready. If it cannot finish, the saved state is retained for a later load.
 - Fracture hierarchy and piece transforms are saved; Chaos removal and decay state are not.
 - Capture and restoration are server-authoritative. The project handles replication.
+
+## Settings
+
+**EMS Geometry Collection Actor**
+
+| Setting | Default | Meaning |
+| --- | --- | --- |
+| **Asset Mismatch Policy** | Reject | **Reject** restores only onto the saved asset. **Allow If Hierarchy Matches** also accepts a different asset whose hierarchy and authored transforms match. |

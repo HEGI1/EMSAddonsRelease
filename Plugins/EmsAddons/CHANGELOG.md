@@ -1,5 +1,31 @@
 # Changelog
 
+## 1.2.0 - 2026-11-07
+
+### Added
+
+- **Autosave and Checkpoints:** save slots. Each save is an ordinary EMS slot of the current profile and becomes the current slot, so a normal EMS load continues from the newest save.
+  - **Autosave Slot Count** rotates autosaves through `<Profile>_Autosave_0` to `<Profile>_Autosave_<N-1>`. Zero (default) keeps 1.1 behavior.
+  - **Manual Save** writes `<Profile>_Manual_<Name>`.
+  - **Load Save**, **Get Save Slots**, **Get Save Profile**, **Get Slot Profile**, **On Save Loaded** and **On Save Load Failed** load and list saves.
+  - **Carried Custom Files** and **Add Carried Custom File** carry slot-bound custom saves into each new save.
+  - After an interrupted save to a different slot, the next start can return to the previous existing slot and delete the incomplete slot. A later complete save of that slot, including the game's own **Save Game Actors**, keeps it.
+  - When EMS reports that a save to a different slot failed, the addon returns to the previous slot and deletes the incomplete slot, so **Get Save Slots** never lists it and **Load Save** never loads it.
+  - Requires EMS 1.86 for World Partition and level streaming. With EMS 1.85 the addon logs a warning, because switching slots there clears memory loading.
+
+### Changed
+
+- **Autosave and Checkpoints:** new checkpoints save into their own slot, `<Profile>_Checkpoint` or `<Profile>_Checkpoint_<Checkpoint Slot Name>`. Later addon saves retain a reference to the checkpoint. Loadable 1.1 checkpoints remain in their original slots until those slots are overwritten.
+
+### Fixed
+
+- **Autosave and Checkpoints:** in Play In Editor, a checkpoint read back from a save no longer fails to match its map, so **Load Last Checkpoint** loads it instead of travelling to the wrong world.
+- **Autosave and Checkpoints:** checkpoint triggers are re-armed after a save is loaded.
+- **Autosave and Checkpoints:** when **Load Last Checkpoint** cannot open the checkpoint's map, it reports **On Checkpoint Load Failed** and returns to the previous slot. Previously the load stayed pending and blocked later autosaves.
+- **Autosave and Checkpoints:** while the game is paused, **Load Last Checkpoint** for a checkpoint on the current map returns false and changes nothing, because EMS does not load during pause. Unpause first. Checkpoints on another map still load, since opening the map ends the pause.
+- **Physics:** the streaming guard no longer holds a body spawned over a real void once the world below has loaded (World Partition, or maps whose streamed sublevels are all visible); the body falls instead of hanging in the air.
+- **Physics:** the streaming guard checks the whole footprint of each simulating body, so wide or overhanging bodies and broken Geometry Collections are held when the floor they rest on streams out.
+
 ## 1.1.2 - 2026-11-04
 
 ### Added

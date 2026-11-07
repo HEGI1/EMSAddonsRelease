@@ -81,6 +81,14 @@ void EMSAutosaveMapTravel::HandlePreLoadMap(const FWorldContext& WorldContext, c
 		return;
 	}
 
+	// Load Save already made the selected save the current slot. Saving the
+	// outgoing world now would overwrite it.
+	if (Autosave->IsSaveLoadInProgress())
+	{
+		LogSkip(MapName, TEXT("a save load is travelling to its map."));
+		return;
+	}
+
 	if (Autosave->IsAutosaveBlocked())
 	{
 		LogSkip(MapName, TEXT("an autosave blocker is active."));
@@ -94,8 +102,8 @@ void EMSAutosaveMapTravel::HandlePreLoadMap(const FWorldContext& WorldContext, c
 		return;
 	}
 
-	const FString SaveSlot = EMS->GetCurrentSaveGameName();
-	if (SaveSlot.IsEmpty())
+	const FString CurrentSlot = EMS->GetCurrentSaveGameName();
+	if (CurrentSlot.IsEmpty())
 	{
 		LogSkip(MapName, TEXT("no current EMS save slot is set."));
 		return;
@@ -119,7 +127,9 @@ void EMSAutosaveMapTravel::HandlePreLoadMap(const FWorldContext& WorldContext, c
 		return;
 	}
 
-	if (!Autosave->BeginSynchronousAutosave(MapLeaveAutosaveReason, SaveSlot))
+	// Switches the current slot to the next autosave slot; SaveSlot is where this save writes.
+	FString SaveSlot;
+	if (!Autosave->BeginSynchronousAutosave(MapLeaveAutosaveReason, CurrentSlot, SaveSlot))
 	{
 		LogSkip(MapName, TEXT("the autosave subsystem could not reserve the map-leave save."));
 		return;

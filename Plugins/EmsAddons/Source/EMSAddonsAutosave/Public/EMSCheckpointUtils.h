@@ -7,16 +7,6 @@
 class UEMSCheckpointSaveGame;
 class UWorld;
 
-/**
- * Checkpoint activation writes two files that cannot be written at once: the
- * EMS player/level save, then the checkpoint metadata. If the second write
- * never lands, the slot holds new world state described by an older checkpoint.
- *
- * A generation ID pairs the two. It is reserved in metadata before the checkpoint
- * EMS save runs and confirmed after that save succeeds. Later normal EMS actor
- * saves clear the checkpoint metadata, so a checkpoint is never presented as an
- * independent snapshot of newer slot data.
- */
 namespace EMSCheckpoint
 {
 	/**
@@ -31,41 +21,19 @@ namespace EMSCheckpoint
 		const UWorld* World,
 		const FSoftObjectPath& WorldPath);
 
-	/** True while the stored checkpoint record still describes the EMS actor save paired with it. */
-	EMSADDONSAUTOSAVE_API bool IsCurrentGeneration(
+	/**
+	 * Reads the checkpoint a checkpoint custom save names, as a current (version 2) record.
+	 *
+	 * A 1.1 record names no slot: its checkpoint is HolderSlot itself, and only while its
+	 * two generations match (otherwise a later 1.1 save had superseded it). It is returned
+	 * with Save Slot set to HolderSlot. Returns false when there is no valid checkpoint.
+	 */
+	EMSADDONSAUTOSAVE_API bool ResolveRecord(
+		const UEMSCheckpointSaveGame* Save,
+		const FString& HolderSlot,
+		FEMSCheckpointRecord& OutRecord);
+
+	/** True when the save holds a 1.1 record that ResolveRecord accepts. */
+	EMSADDONSAUTOSAVE_API bool IsLoadableLegacyRecord(
 		const UEMSCheckpointSaveGame* Save);
-
-	/**
-	 * Reserves the generation of the EMS save that is about to run.
-	 * A checkpoint record already known to be stale is discarded by a successful reservation
-	 * so a later failed save cannot revive it. A failed reservation write restores the exact prior metadata.
-	 */
-	EMSADDONSAUTOSAVE_API bool BeginGeneration(
-		UEMSCheckpointSaveGame* Save,
-		const FGuid& Generation,
-		TFunctionRef<bool()> WriteToDisk);
-
-	/** Stages a checkpoint record and rolls the object back if the supplied metadata write fails. */
-	EMSADDONSAUTOSAVE_API bool CommitRecord(
-		UEMSCheckpointSaveGame* Save,
-		const FEMSCheckpointRecord& Record,
-		const FGuid& Generation,
-		TFunctionRef<bool()> WriteToDisk);
-
-	/**
-	 * Rolls back a reserved generation only when the associated EMS save task never
-	 * started. Once the EMS task has started, the reservation must remain unresolved
-	 * on failure because one of EMS's separate core files may already have changed.
-	 */
-	EMSADDONSAUTOSAVE_API bool AbandonGeneration(
-		UEMSCheckpointSaveGame* Save,
-		TFunctionRef<bool()> WriteToDisk);
-
-	/**
-	 * Clears a currently committed checkpoint after a later normal EMS actor save
-	 * superseded its state. Rolls the metadata object back if its disk write fails.
-	 */
-	EMSADDONSAUTOSAVE_API bool ClearCurrentCheckpoint(
-		UEMSCheckpointSaveGame* Save,
-		TFunctionRef<bool()> WriteToDisk);
 }
