@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.2.3 - 2026-11-09
+
+### Documentation
+
+- **Autosave and Checkpoints:** describes that a save without Level in **Save Data Flags** leaves the replaced slot without Level data under streaming, and that a save whose switch back EMS refuses is recovered on the next start.
+
 ## 1.2.2 - 2026-11-09
 
 ### Fixed

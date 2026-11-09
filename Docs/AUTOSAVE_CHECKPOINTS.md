@@ -63,7 +63,7 @@ The checkpoint actor also has **On Checkpoint Activated**.
 
 ## Important behavior
 
-- With World Partition or level streaming, EMS keeps restoring streamed cells and sub-levels from memory only when the game switches to a slot without Level data. So a save that replaces an existing slot first deletes that slot's old Level data. Until the save finishes, that slot cannot be loaded.
+- With World Partition or level streaming, EMS keeps restoring streamed cells and sub-levels from memory only when the game switches to a slot without Level data. So a save that replaces an existing slot first deletes that slot's old Level data. Until the save finishes, that slot cannot be loaded. This applies when **Save Data Flags** do not include Level too: that save never writes Level data, so the slot has none until the game saves Level data to it again.
 - With streaming, a failed save returns to the previous slot, which has Level data. EMS then stops restoring streamed cells from memory: World Partition reloads the level from the previous slot when the next cell streams in. The addon logs a warning.
 - Do not call **Set Current Save Slot** on Begin Play. It replaces the slot **Load Save** selected, and the load fails.
 - Your own **Save Game Actors** call writes the current slot. Right after a checkpoint, that is the checkpoint slot, so the checkpoint ends. Use **Request Autosave** or **Manual Save** instead.
@@ -71,6 +71,7 @@ The checkpoint actor also has **On Checkpoint Activated**.
 - When a save's map no longer exists, **Load Save** and **Load Last Checkpoint** report failure and the previous slot becomes current again.
 - When EMS reports that a save to another slot failed, the addon returns to the previous slot and deletes the incomplete one. A save that rewrites the current slot (**Autosave Slot Count** 0 or 1) has no slot to return to.
 - Some unfinished saves return to the previous slot but keep their target: a save canceled before EMS starts writing (the target keeps its older actor data, but already has the newer **Carried Custom Files**), a save cut off by map travel, and a checkpoint whose record could not be written. With streaming, a canceled save already deleted the target's old Level data, so the addon deletes that target.
+- EMS refuses the switch back while another EMS operation runs, for example one started from **On Autosave Started**. The game then stays on the unfinished target, and the next start returns to the previous slot as after a crash.
 - After a crash during a save, the next start returns to the previous slot when it can, deletes the incomplete slot and logs a warning. The same applies when travel cut a save off and play went on in that slot, unless a later complete save rewrote it.
 - **Autosave When Leaving Map** saves synchronously and can cause a brief hitch. It is skipped while EMS is busy or blocked, and for **Load Save** travel.
 - Starting a load cancels pending autosaves.
