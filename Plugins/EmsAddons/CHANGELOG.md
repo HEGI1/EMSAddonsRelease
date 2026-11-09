@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.2.2 - 2026-11-09
+
+### Fixed
+
+- **Autosave and Checkpoints:** when an **On Autosave Started** callback starts another EMS operation, or a map-leave save is aborted, and EMS refuses the switch back to the previous slot, the interrupted-save record is kept, so the next start still returns to the previous slot.
+
+### Notes
+
+- **Autosave and Checkpoints:** with World Partition or level streaming, a save whose **Save Data Flags** do not include Level also removes the replaced slot's old Level data. Keeping it would make streamed cells reload that older state into the running world. The slot has no Level data until the game saves Level data to it again.
+
 ## 1.2.1 - 2026-11-07
 
 ### Fixed

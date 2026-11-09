@@ -468,8 +468,11 @@ void UEMSAutosaveSubsystem::StartSave(
 	bool bRemovedTargetLevelData = false;
 	if (!SwitchToSaveSlot(TargetSlot, EEMSSlotSwitch::ContinueSession, &bRemovedTargetLevelData))
 	{
-		ReturnFromAbandonedSave(PreviousSlot, TargetSlot, bRemovedTargetLevelData);
-		ClearSaveJournal();
+		// The journal stays while the game is still on the target, so the next start recovers it.
+		if (ReturnFromAbandonedSave(PreviousSlot, TargetSlot, bRemovedTargetLevelData))
+		{
+			ClearSaveJournal();
+		}
 		FailBeforeStart(TEXT("The save was not started because EMS did not switch to its target slot."));
 		return;
 	}
@@ -481,8 +484,10 @@ void UEMSAutosaveSubsystem::StartSave(
 	ActiveSaveTask = UEMSAsyncSaveGame::AsyncSaveActors(this, Settings->SaveDataFlags);
 	if (!ActiveSaveTask)
 	{
-		ReturnFromAbandonedSave(PreviousSlot, SaveSlot, bRemovedTargetLevelData);
-		ClearSaveJournal();
+		if (ReturnFromAbandonedSave(PreviousSlot, SaveSlot, bRemovedTargetLevelData))
+		{
+			ClearSaveJournal();
+		}
 		if (Reason == ManualSaveReason)
 		{
 			// Manual saves are never queued; the caller hears about it now.
@@ -564,9 +569,14 @@ void UEMSAutosaveSubsystem::StartSave(
 		|| (IsAutosaveBlocked() && Reason != ManualSaveReason))
 	{
 		const TWeakObjectPtr<AEMSCheckpoint> AbortedActor = ActiveCheckpointActor;
-		ResetActiveSaveState();
+		// EMS refuses the switch back while a callback's EMS task runs. Then the journal
+		// stays, so the next start returns to the previous slot.
+		ResetActiveSaveState(false);
 		RestorePauseForAbandonedTask();
-		ReturnFromAbandonedSave(PreviousSlot, SaveSlot, bRemovedTargetLevelData);
+		if (ReturnFromAbandonedSave(PreviousSlot, SaveSlot, bRemovedTargetLevelData))
+		{
+			ClearSaveJournal();
+		}
 		if (AbortedActor.IsValid())
 		{
 			AbortedActor->MarkActivationFailed();

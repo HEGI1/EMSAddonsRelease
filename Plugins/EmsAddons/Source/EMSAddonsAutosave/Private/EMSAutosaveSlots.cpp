@@ -278,6 +278,9 @@ bool UEMSAutosaveSubsystem::SwitchToSaveSlot(const FString& TargetSlot, const EE
 	back unrestored. The save rewrites the Level file completely from session memory (EMS never
 	merges the old file), so the stale one of the slot being replaced holds nothing the save needs.
 	Removing it first lets the running session continue into the new slot.
+	This applies to saves without Level data too. Keeping the file would make streamed cells reload
+	that older Level data into the running world. The slot's Player data is replaced anyway, so its
+	old Level data no longer matches it; the game's next Level save writes the file again.
 	*/
 	if (Switch == EEMSSlotSwitch::ContinueSession && bStreamingSession)
 	{

@@ -175,7 +175,7 @@ void UEMSAutosaveSubsystem::AbortSynchronousAutosave()
 	const FString FailedSlot = ActiveSaveSlot;
 
 	// Nothing was written, so the previous slot is still the newest complete save.
-	ReturnToPreviousSlot(ActivePreviousSlot, FailedSlot, EEMSSlotSwitch::LeaveWorld);
+	const bool bReturned = ReturnToPreviousSlot(ActivePreviousSlot, FailedSlot, EEMSSlotSwitch::LeaveWorld);
 	if (!FailedReason.IsNone())
 	{
 		OnAutosaveFailed.Broadcast(FailedReason);
@@ -210,5 +210,6 @@ void UEMSAutosaveSubsystem::AbortSynchronousAutosave()
 		return;
 	}
 
-	ResetActiveSaveState();
+	// Still on the target when EMS refused the switch back; the journal lets the next start return.
+	ResetActiveSaveState(bReturned);
 }
