@@ -40,9 +40,15 @@ bool UEMSAutosaveSubsystem::BeginSynchronousAutosave(
 	UEMSObject* EMS = UEMSObject::Get(this);
 	if (!EMS
 		|| TargetSlot.IsEmpty()
-		|| !InvalidateCheckpointStoredIn(TargetSlot, true)
-		|| !CarryCustomFiles(CurrentSlot, TargetSlot))
+		|| !EMS->GetCurrentSaveGameName().Equals(CurrentSlot, ESearchCase::IgnoreCase)
+		|| !PreflightCarriedCustomFiles(CurrentSlot, TargetSlot, true)
+		|| !InvalidateCheckpointStoredIn(TargetSlot, true))
 	{
+		return false;
+	}
+	if (!CarryCustomFiles(CurrentSlot, TargetSlot))
+	{
+		SetSlotUnavailable(TargetSlot, true);
 		return false;
 	}
 	BeginSaveJournal(TargetSlot, CurrentSlot);
@@ -62,6 +68,8 @@ bool UEMSAutosaveSubsystem::BeginSynchronousAutosave(
 	ActiveDisplayName = AutosaveDisplayName;
 	ActiveSaveType = EEMSSaveSlotType::Autosave;
 	ActiveSaveSlot = SaveSlot;
+	ActiveSaveUser = EMS->GetCurrentSaveUserName();
+	ActiveSlotInfoWriteStartSeconds = FPlatformTime::Seconds();
 	ActivePreviousSlot = CurrentSlot;
 	bActiveRequestIsCheckpoint = false;
 	ActiveCheckpoint = FEMSCheckpointRecord();
@@ -76,38 +84,49 @@ bool UEMSAutosaveSubsystem::BeginSynchronousAutosave(
 		&& ActiveReason == Reason
 		&& ActiveSaveSlot.Equals(SaveSlot, ESearchCase::IgnoreCase))
 	{
+		if (!EMS->GetCurrentSaveUserName().Equals(ActiveSaveUser, ESearchCase::IgnoreCase))
+		{
+			AbortSynchronousAutosave();
+			return false;
+		}
 		OutTargetSlot = SaveSlot;
 		return true;
 	}
 	return false;
 }
 
-void UEMSAutosaveSubsystem::CompleteSynchronousAutosave(
+bool UEMSAutosaveSubsystem::CompleteSynchronousAutosave(
 	bool bSuccess,
 	const int32 SaveDataFlags)
 {
 	if (!bSaveActive || ActiveSaveTask)
 	{
-		return;
+		return false;
 	}
 
 	const FName CompletedReason = ActiveReason;
 	const FString CompletedSlot = ActiveSaveSlot;
 	AddonSaveSlotAwaitingActorsSaved = CompletedSlot;
+	const UEMSObject* CurrentEMS = UEMSObject::Get(this);
+	bSuccess = bSuccess && CurrentEMS
+		&& CurrentEMS->GetCurrentSaveUserName().Equals(ActiveSaveUser, ESearchCase::IgnoreCase)
+		&& CurrentEMS->GetCurrentSaveGameName().Equals(CompletedSlot, ESearchCase::IgnoreCase)
+		&& HasWrittenActiveSlotInfo();
 	if (bSuccess)
 	{
 		bSuccess = WriteSaveSlotMetadata(CompletedSlot, ActiveDisplayName, ActiveSaveType);
 	}
+	const bool bClearJournal = bSuccess || ReturnAndDiscardFailedSave(ActivePreviousSlot, CompletedSlot);
 
 	if (bSuccess)
 	{
+		SetSlotUnavailable(CompletedSlot, false);
 		LastSuccessfulSaveSeconds = FPlatformTime::Seconds();
 		OnAutosaveCompleted.Broadcast(CompletedReason);
 	}
 	else
 	{
 		// The failed slot may hold a partial save. Continue from the last complete one.
-		ReturnAndDiscardFailedSave(ActivePreviousSlot, CompletedSlot);
 		OnAutosaveFailed.Broadcast(CompletedReason);
 	}
 
@@ -121,10 +140,11 @@ void UEMSAutosaveSubsystem::CompleteSynchronousAutosave(
 	{
 		// The reservation is gone, so the EMS broadcast below is skipped.
 		AddonSaveSlotAwaitingActorsSaved.Reset();
-		return;
+		return bSuccess;
 	}
 
-	if (UEMSObject* EMS = UEMSObject::Get(this); IsValid(EMS))
+	if (UEMSObject* EMS = UEMSObject::Get(this); IsValid(EMS)
+		&& EMS->GetCurrentSaveUserName().Equals(ActiveSaveUser, ESearchCase::IgnoreCase))
 	{
 		EMS->BroadcastOnActorsSaved(
 			FAsyncSaveHelpers::GetMode(SaveDataFlags),
@@ -138,7 +158,7 @@ void UEMSAutosaveSubsystem::CompleteSynchronousAutosave(
 		|| ActiveReason != CompletedReason
 		|| !ActiveSaveSlot.Equals(CompletedSlot, ESearchCase::IgnoreCase))
 	{
-		return;
+		return bSuccess;
 	}
 
 	// Any addon request raised during start/completion callbacks is too late for
@@ -164,10 +184,11 @@ void UEMSAutosaveSubsystem::CompleteSynchronousAutosave(
 		|| ActiveReason != CompletedReason
 		|| !ActiveSaveSlot.Equals(CompletedSlot, ESearchCase::IgnoreCase))
 	{
-		return;
+		return bSuccess;
 	}
 
-	ResetActiveSaveState();
+	ResetActiveSaveState(bClearJournal);
+	return bSuccess;
 }
 
 void UEMSAutosaveSubsystem::AbortSynchronousAutosave()

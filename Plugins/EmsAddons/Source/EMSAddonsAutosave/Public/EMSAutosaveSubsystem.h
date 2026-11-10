@@ -132,7 +132,7 @@ public:
 		return bSaveLoadAfterTravel || !SaveBeingLoaded.IsEmpty();
 	}
 
-	/** Returns every existing slot of the current profile (autosaves, manual saves, checkpoints), newest first. */
+	/** Returns the current profile's existing slots, newest first, excluding targets known to be incomplete this session. */
 	UFUNCTION(BlueprintCallable, Category = "EMS Addons|Autosave and Checkpoints|Saves", meta = (DisplayName = "Get Save Slots"))
 	TArray<FString> GetSaveSlots();
 
@@ -235,8 +235,8 @@ public:
 	 */
 	bool BeginSynchronousAutosave(FName Reason, const FString& CurrentSlot, FString& OutTargetSlot);
 
-	/** Completes a synchronous save reservation and emits the normal addon and EMS callbacks. */
-	void CompleteSynchronousAutosave(bool bSuccess, int32 SaveDataFlags);
+	/** Completes a synchronous save reservation and emits the normal addon and EMS callbacks. Returns the validated save result. */
+	bool CompleteSynchronousAutosave(bool bSuccess, int32 SaveDataFlags);
 
 	/** Aborts a synchronous save reservation before any EMS files are written. */
 	void AbortSynchronousAutosave();
@@ -332,6 +332,10 @@ private:
 	EEMSSaveSlotType ActiveSaveType = EEMSSaveSlotType::Autosave;
 	/** The slot the active save writes. */
 	FString ActiveSaveSlot;
+	FString ActiveSaveUser;
+	double ActiveSlotInfoWriteStartSeconds = DBL_MAX;
+	/** Incomplete targets from failed preparation or saving. Scoped to EMS user and this game instance. */
+	TMap<FString, TSet<FString>> UnavailableSlots;
 	/** The current slot before the active save switched away from it. A save that fails returns to it. */
 	FString ActivePreviousSlot;
 	FString CheckpointLoadSlot;
@@ -399,6 +403,11 @@ private:
 		const FText& DisplayName = FText());
 
 	bool WriteSaveSlotMetadata(const FString& SlotName, const FText& DisplayName, EEMSSaveSlotType SaveType);
+	bool HasWrittenActiveSlotInfo() const;
+	bool DoesSaveSlotRemain(const FString& SlotName) const;
+	bool IsSlotUnavailable(const FString& SlotName) const;
+	void SetSlotUnavailable(const FString& SlotName, bool bUnavailable);
+	bool PreflightCarriedCustomFiles(const FString& SourceSlot, const FString& TargetSlot, bool bIncludeCheckpointRecord) const;
 	/** Resolves a generated ID to the original spelling of an existing slot, for pre-lowercase saves. */
 	FString ResolveSaveSlotTarget(const FString& SlotName) const;
 
@@ -421,7 +430,7 @@ private:
 	bool ReturnFromAbandonedSave(const FString& PreviousSlot, const FString& AbandonedSlot, bool bRemovedLevelData);
 	/**
 	 * ReturnToPreviousSlot for a save that EMS reported as failed after it may have
-	 * started writing, then deletes FailedSlot so it can never be listed or loaded.
+	 * started writing, then deletes FailedSlot. If deletion fails, excludes it from addon lists and loads for this session.
 	 * Only for a reported failure: a save whose result is unknown may be complete.
 	 * Same return value as ReturnToPreviousSlot.
 	 */

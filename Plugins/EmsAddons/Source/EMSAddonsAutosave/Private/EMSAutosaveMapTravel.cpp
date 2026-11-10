@@ -103,6 +103,7 @@ void EMSAutosaveMapTravel::HandlePreLoadMap(const FWorldContext& WorldContext, c
 	}
 
 	const FString CurrentSlot = EMS->GetCurrentSaveGameName();
+	const FString CurrentUser = EMS->GetCurrentSaveUserName();
 	if (CurrentSlot.IsEmpty())
 	{
 		LogSkip(MapName, TEXT("no current EMS save slot is set."));
@@ -148,6 +149,7 @@ void EMSAutosaveMapTravel::HandlePreLoadMap(const FWorldContext& WorldContext, c
 		&& !FAsyncSaveHelpers::ShouldCancelSaveTask(EMS)
 		&& Autosave->IsAutosaveActive()
 		&& !Autosave->IsAutosaveBlocked()
+		&& EMS->GetCurrentSaveUserName().Equals(CurrentUser, ESearchCase::IgnoreCase)
 		&& EMS->GetCurrentSaveGameName().Equals(SaveSlot, ESearchCase::IgnoreCase)
 		&& !EMS->IsAsyncTaskActive(false)
 		&& !IsStreamingSaveBlocked(EMS, SaveDataFlags);
@@ -188,7 +190,7 @@ void EMSAutosaveMapTravel::HandlePreLoadMap(const FWorldContext& WorldContext, c
 	// Completion keeps the synchronous reservation through both the addon event
 	// and EMS OnActorsSaved broadcast, so neither callback surface can start a
 	// fresh async addon save immediately before LoadMap tears this world down.
-	Autosave->CompleteSynchronousAutosave(bSuccess, SaveDataFlags);
+	bSuccess = Autosave->CompleteSynchronousAutosave(bSuccess, SaveDataFlags);
 
 	if (bSuccess)
 	{

@@ -13,9 +13,10 @@ struct EMSADDONSAUTOSAVE_API FEMSAutosavePendingRequest
 	}
 
 	void Enqueue(const FName InReason, const FString& InSaveSlot, const FEMSCheckpointRecord* InCheckpoint,
-		const FText& InDisplayName = FText())
+		const FText& InDisplayName = FText(), const FString& InSaveUser = FString())
 	{
-		const bool bDifferentSlot = bPending && !SaveSlot.Equals(InSaveSlot, ESearchCase::IgnoreCase);
+		const bool bDifferentSlot = bPending && (!SaveSlot.Equals(InSaveSlot, ESearchCase::IgnoreCase)
+			|| !SaveUser.Equals(InSaveUser, ESearchCase::IgnoreCase));
 		if (bDifferentSlot)
 		{
 			Reset();
@@ -25,6 +26,7 @@ struct EMSADDONSAUTOSAVE_API FEMSAutosavePendingRequest
 		{
 			Reason = InReason;
 			SaveSlot = InSaveSlot;
+			SaveUser = InSaveUser;
 			Checkpoint = *InCheckpoint;
 			DisplayName = InCheckpoint->DisplayName;
 			bCheckpoint = true;
@@ -34,6 +36,7 @@ struct EMSADDONSAUTOSAVE_API FEMSAutosavePendingRequest
 		{
 			Reason = InReason;
 			SaveSlot = InSaveSlot;
+			SaveUser = InSaveUser;
 			Checkpoint = FEMSCheckpointRecord();
 			DisplayName = InDisplayName;
 			bCheckpoint = false;
@@ -64,6 +67,7 @@ struct EMSADDONSAUTOSAVE_API FEMSAutosavePendingRequest
 	{
 		Reason = NAME_None;
 		SaveSlot.Reset();
+		SaveUser.Reset();
 		DisplayName = FText();
 		Checkpoint = FEMSCheckpointRecord();
 		bPending = false;
@@ -78,10 +82,12 @@ struct EMSADDONSAUTOSAVE_API FEMSAutosavePendingRequest
 	}
 	FName GetReason() const { return Reason; }
 	const FString& GetSaveSlot() const { return SaveSlot; }
+	bool IsForUser(const FString& InSaveUser) const { return bPending && SaveUser.Equals(InSaveUser, ESearchCase::IgnoreCase); }
 
 private:
 	FName Reason;
 	FString SaveSlot;
+	FString SaveUser;
 	FText DisplayName;
 	FEMSCheckpointRecord Checkpoint;
 	bool bPending = false;

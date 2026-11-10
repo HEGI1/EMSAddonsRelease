@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.2.6 - 2026-11-10
+
+### Documentation
+
+- **Autosave and Checkpoints:** shortened the display-name reference, grouped failure/recovery rules, and clarified incomplete-slot filtering, single-slot reuse and EMS 1.85/1.86 streaming behavior.
+
+### Fixed
+
+- **Autosave and Checkpoints:** pending requests and save-start revalidation are bound to the EMS user; cleanup cannot roll back or delete another user's same-named slot.
+- **Autosave failure handling:** verifies fresh Slot Info and removal of stale streaming Level data, preflights carried source files, and excludes incomplete targets from addon menus and loads when preparation or cleanup fails. A successful replacement clears the session exclusion.
+- **Checkpoint and crash recovery:** keeps the save journal through checkpoint-record persistence, discards targets whose record failed, retains recovery journals when switching back is refused, and reports deletion failures accurately. Recovery deletion remains best effort across process restarts.
+
 ## 1.2.5 - 2026-11-10
 
 ### Documentation

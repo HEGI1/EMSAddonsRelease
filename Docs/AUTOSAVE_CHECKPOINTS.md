@@ -31,25 +31,26 @@ These endings are reserved regardless of case, so do not use them in profile nam
 
 ## Save and load menus
 
-- **Get Save Slots** lists the profile's saves, newest first. Use EMS **Get Named Slot Info** and **Import Save Thumbnail** for further details such as level and players.
-- **Get Save Slots With Details** returns the same list with **Slot Name**, **Display Name**, **Save Type** (Autosave, Manual, Checkpoint), and **Time Stamp**. **Get Save Slot Details** reads one existing slot; a missing slot returns false. These nodes do not change the current slot.
+- **Get Save Slots** lists the profile's saves, newest first, excluding targets known to be incomplete in this game instance. Use EMS **Get Named Slot Info** and **Import Save Thumbnail** for further details such as level and players.
+- **Get Save Slots With Details** adds **Slot Name**, **Display Name**, **Save Type** (Autosave, Manual, Checkpoint), and **Time Stamp**. **Get Save Slot Details** reads one slot and returns false if it is missing or excluded as incomplete. Neither node changes the current slot.
 - **Load Save** makes a slot current, opens its map and loads it. **On Save Loaded** / **On Save Load Failed** report the result.
 - **Get Save Profile** / **Get Slot Profile** return the profile of the current slot or of any slot name.
 
 ## Display names
 
-Display names are optional labels stored per save. The menu can show exactly `Factory Inner` while the internal EMS slot is `game1_checkpoint_factoryinner`. Use **Display Name** for menu text and **Slot Name** for **Load Save**, thumbnails, and EMS operations. Duplicate display names are allowed and never decide which save is overwritten.
+Use **Display Name** for menu text, such as `Factory Inner`, and **Slot Name** for loading and EMS operations. Labels use Text and preserve capitalization, spaces, punctuation and localization. Duplicate labels are allowed; slot IDs decide which save is replaced.
 
-- **Checkpoints:** set the checkpoint actor's **Display Name** to `Factory Inner`. **Checkpoint Slot Name** still decides which checkpoints share and replace a save.
-- **Autosaves:** call **Set Autosave Display Name** when the player enters a location. Future gameplay, periodic, map-load, and map-leave autosaves capture that name. **Request Autosave** also has an optional **Display Name** input that overrides it for one request. Empty uses the current autosave display name. Queued requests keep the name captured when requested; when ordinary requests combine, the latest request's name wins.
-- **Manual saves:** **Manual Save** has an optional **Display Name** input for player-entered text. Empty uses **Save Name**. **Save Name** remains the internal identifier: calling with the same Save Name replaces that manual save, even when its display name differs. Use distinct Save Names for separate saves with identical labels.
-- **Renaming:** call **Set Save Slot Display Name** with an existing Slot Name. This changes only its label, preserving the save data, timestamp, and rotation order. It returns false while saving/loading, on clients, or if the slot does not exist. Empty or whitespace clears the alias and uses a fallback.
+| Save | Set its label |
+| --- | --- |
+| Checkpoint | Set the actor's **Display Name**. **Checkpoint Slot Name** selects the slot. |
+| Autosave | Call **Set Autosave Display Name** when the location changes. **Request Autosave → Display Name** overrides it for one request; empty uses the current name. |
+| Manual | Pass **Display Name** to **Manual Save**; empty uses **Save Name**. **Save Name** selects the slot. |
 
-Existing saves work without migration. Named manual/checkpoint slots fall back to their name suffix; unnamed checkpoints show `Checkpoint`; autosaves show `Autosave` or `Autosave 1`, `Autosave 2`, etc. Existing checkpoint records use their stored Display Name only for the actual checkpoint slot, not for later saves carrying that record.
+Names are captured when requested, including while queued. Combined ordinary requests keep the latest name; changing location does not relabel older saves. The current autosave name survives map travel but is not restored by loading: update it from your game's location state on new game, load and map changes.
 
-Names use Text, preserving spaces, punctuation, and localized checkpoint labels without filename sanitization. A name is saved with its snapshot; moving to a new location does not relabel older saves. **Set Autosave Display Name** is a game-session value: initialize/update it from your game's location state on new game, load, and map changes. It survives map travel and is not restored automatically from a loaded save.
+**Set Save Slot Display Name** renames an existing slot without changing its data, timestamp or rotation order. Empty or whitespace clears the label. It returns false while busy, on clients, or for a missing or excluded slot.
 
-The addon stores these labels in the slot-bound custom file `EMSSlotMetadata`. It is internal and excluded from **Carried Custom Files**, so one save cannot inherit another save's label. A later save to the same slot replaces its label with that save's name. No change to EMS core or existing slot names is required.
+Older saves need no migration. Fallback labels use the manual/checkpoint suffix, `Checkpoint`, or `Autosave` / `Autosave 1`, etc. An older checkpoint's stored label applies only to its own slot.
 
 ## Checkpoints
 
@@ -85,21 +86,27 @@ The checkpoint actor also has **On Checkpoint Activated**.
 
 ## Important behavior
 
-- With World Partition or level streaming, EMS keeps restoring streamed cells and sub-levels from memory only when the game switches to a slot without Level data. So a save that replaces an existing slot first deletes that slot's old Level data. Until the save finishes, that slot cannot be loaded. This applies when **Save Data Flags** do not include Level too: that save never writes Level data, so the slot has none until the game saves Level data to it again.
+- With EMS 1.86, World Partition and level streaming keep restoring from memory only when switching to a slot without Level data. Before switching, an addon save therefore removes its target's old Level file and refuses the switch if removal fails. Until saving finishes, the modified target cannot be loaded. A save without Level in **Save Data Flags** leaves the slot without Level data until a later Level save.
+- EMS 1.85 supports ordinary slot switching but clears streaming memory restoration when switching. The addon logs a warning; the EMS 1.86 continuity workaround does not apply to 1.85.
 - With streaming, a failed save returns to the previous slot, which has Level data. EMS then stops restoring streamed cells from memory: World Partition reloads the level from the previous slot when the next cell streams in. The addon logs a warning.
 - Do not call **Set Current Save Slot** on Begin Play. It replaces the slot **Load Save** selected, and the load fails.
 - Your own **Save Game Actors** call writes the current slot. Right after a checkpoint, that is the checkpoint slot, so the checkpoint ends. Use **Request Autosave** or **Manual Save** instead.
 - While paused, **Load Last Checkpoint** for a checkpoint on the current map returns false, because EMS does not load during pause. Unpause first.
 - When a save's map no longer exists, **Load Save** and **Load Last Checkpoint** report failure and the previous slot becomes current again.
-- When EMS reports that a save to another slot failed, the addon returns to the previous slot and deletes the incomplete one. A save that rewrites the current slot (**Autosave Slot Count** 0 or 1) has no slot to return to.
-- Some unfinished saves return to the previous slot but keep their target: a save canceled before EMS starts writing (the target keeps its older actor data, but already has the newer **Carried Custom Files**), a save cut off by map travel, and a checkpoint whose record could not be written. With streaming, a canceled save already deleted the target's old Level data, so the addon deletes that target.
-- EMS refuses the switch back while another EMS operation runs, for example one started from **On Autosave Started**. The game then stays on the unfinished target, and the next start returns to the previous slot as after a crash.
-- After a crash during a save, the next start returns to the previous slot when it can, deletes the incomplete slot and logs a warning. The same applies when travel cut a save off and play went on in that slot, unless a later complete save rewrote it.
 - **Autosave When Leaving Map** saves synchronously and can cause a brief hitch. It is skipped while EMS is busy or blocked, and for **Load Save** travel.
 - Starting a load cancels pending autosaves.
 - Saves and checkpoints from 1.1 keep working.
 - Slot-bound EMS custom saves listed in **Carried Custom Files** are copied into each new save. Fetch them with **Get Custom Save** when needed instead of keeping the object across saves.
 - Checkpoint IDs are assigned automatically. Use **Regenerate Checkpoint ID** only to fix a duplicate; changing an established ID breaks existing saves.
+
+## Failure handling and recovery
+
+- Pending requests belong to the EMS user and profile that requested them. Changing either cancels the request before it starts. Changing the user from **On Autosave Started** also cancels the save; cleanup never switches or deletes the new user's slots.
+- Success requires fresh Slot Info, display metadata and, for checkpoints, a written checkpoint record. A failed save returns to the previous slot and attempts to delete the incomplete target. When saving into the current slot, there is no earlier slot to return to. **Autosave Slot Count** 0 or 1 can reuse the current slot; a count of at least 2 avoids replacing the current autosave.
+- A save canceled before EMS writes can keep its target's older actor data with newer **Carried Custom Files**. A save interrupted by travel can also keep its target. If preparation removed the old Level data, cancellation attempts to delete that target instead.
+- Carried source files are checked before target preparation. Preparation has no full rollback: later write failures can leave changed custom data. A failed carry operation or cleanup excludes the incomplete target from addon menus, details and loads for this game instance and EMS user. Successful addon replacement makes it available again. This exclusion does not persist across restarts or restrict direct EMS calls.
+- EMS can refuse to return to the previous slot while another task runs. The interrupted-save journal is retained so the next start can recover. Checkpoint saves keep that journal until their record is written.
+- After a crash, recovery returns to the previous existing save when the journal still matches the current user and slot, then attempts to delete the incomplete target. A failed switch retains the journal for retry. A successful switch clears it; failed deletion is reported and the target is excluded for the session. Deletion is not durably retried through another crash. A later successful EMS save covering all addon data clears a matching journal left by an interrupted save.
 
 ## Settings
 
@@ -113,7 +120,7 @@ The checkpoint actor also has **On Checkpoint Activated**.
 | **Periodic Autosave Interval** | 0 s | Autosave at this interval. `0` disables it. |
 | **Autosave After Map Load** / **Map Load Autosave Delay** | Off / 1 s | Autosave this long after a map opens. |
 | **Autosave When Leaving Map** | Off | Save just before map travel. |
-| **Autosave Slot Count** | 0 | `0` saves to the profile slot (as in 1.1); `1`–`10` rotate autosave slots. |
+| **Autosave Slot Count** | 0 | `0` saves to the profile slot (as in 1.1); `1` reuses one autosave slot; `2`–`10` rotate slots. |
 | **Carried Custom Files** | Empty | Slot-bound custom save files copied into each new save. |
 
 **EMS Checkpoint**

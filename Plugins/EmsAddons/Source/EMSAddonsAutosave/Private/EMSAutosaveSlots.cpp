@@ -12,6 +12,7 @@
 #include "EMSObject.h"
 #include "EMSObjectAdv.h"
 #include "EMSPaths.h"
+#include "EMSVersion.h"
 #include "EMSSaveSlotMetadata.h"
 #include "Engine/GameInstance.h"
 #include "Engine/World.h"
@@ -179,7 +180,7 @@ TArray<FString> UEMSAutosaveSubsystem::GetSaveSlots()
 	// EMS lists slots newest first.
 	for (const FString& Slot : EMS->GetSortedSaveSlots())
 	{
-		if (GetSlotProfile(Slot).Equals(Profile, ESearchCase::IgnoreCase))
+		if (GetSlotProfile(Slot).Equals(Profile, ESearchCase::IgnoreCase) && !IsSlotUnavailable(Slot))
 		{
 			Result.Add(Slot);
 		}
@@ -206,7 +207,7 @@ bool UEMSAutosaveSubsystem::GetSaveSlotDetails(const FString& SlotName, FEMSSave
 	Details = FEMSSaveSlotDetails();
 	UEMSObject* EMS = UEMSObject::Get(this);
 	const FString Slot = FSavePaths::ValidateSaveName(SlotName);
-	if (!EMS || SlotName.TrimStartAndEnd().IsEmpty() || Slot.IsEmpty() || !EMS->DoesSaveSlotExist(Slot))
+	if (!EMS || SlotName.TrimStartAndEnd().IsEmpty() || Slot.IsEmpty() || IsSlotUnavailable(Slot) || !EMS->DoesSaveSlotExist(Slot))
 	{
 		return false;
 	}
@@ -439,14 +440,20 @@ bool UEMSAutosaveSubsystem::SwitchToSaveSlot(const FString& TargetSlot, const EE
 	*/
 	if (Switch == EEMSSlotSwitch::ContinueSession && bStreamingSession)
 	{
-		// A listed slot without Level data is no longer a loadable save. The caller deletes it
-		// if the save does not start. Nothing happens when there is no Level file.
+		const FFileContext LevelFile(0, EMS->ActorSaveFile(ValidTarget));
+		const bool bHadLevelData = FSaveFileIntegrity::DoesSaveExist(LevelFile);
+		EMS->DeleteDataFromSlot(ValidTarget, EDeleteSlotType::Level);
+		if (FSaveFileIntegrity::DoesSaveExist(LevelFile))
+		{
+			LogMessage(FString::Printf(TEXT("Save refused: the old Level data of %s could not be removed; switching would stop streaming restoration."), *ValidTarget), true);
+			return false;
+		}
+		// Removing Level data invalidates the old snapshot. The caller deletes its slot
+		// if the save does not start. Nothing was removed when there was no Level file.
 		if (bOutRemovedLevelData)
 		{
-			*bOutRemovedLevelData = EMS->DoesSaveSlotExist(ValidTarget);
+			*bOutRemovedLevelData = bHadLevelData && EMS->DoesSaveSlotExist(ValidTarget);
 		}
-		// Refused only while an EMS task runs; then the switch below falls back to the 1.85 behavior.
-		EMS->DeleteDataFromSlot(ValidTarget, EDeleteSlotType::Level);
 	}
 #endif
 
@@ -491,6 +498,12 @@ bool UEMSAutosaveSubsystem::ReturnFromAbandonedSave(const FString& PreviousSlot,
 bool UEMSAutosaveSubsystem::ReturnToPreviousSlot(const FString& PreviousSlot, const FString& FailedSlot, const EEMSSlotSwitch Switch)
 {
 	UEMSObject* EMS = UEMSObject::Get(this);
+	// A start callback can switch EMS users before the task is activated. Never roll
+	// back a same-named slot belonging to that other user.
+	if (EMS && bSaveActive && !EMS->GetCurrentSaveUserName().Equals(ActiveSaveUser, ESearchCase::IgnoreCase))
+	{
+		return true;
+	}
 	if (!EMS
 		|| PreviousSlot.IsEmpty()
 		|| !EMS->GetCurrentSaveGameName().Equals(FailedSlot, ESearchCase::IgnoreCase)
@@ -509,6 +522,12 @@ bool UEMSAutosaveSubsystem::ReturnToPreviousSlot(const FString& PreviousSlot, co
 
 bool UEMSAutosaveSubsystem::ReturnAndDiscardFailedSave(const FString& PreviousSlot, const FString& FailedSlot)
 {
+	const UEMSObject* CurrentEMS = UEMSObject::Get(this);
+	if (!CurrentEMS || (bSaveActive && !CurrentEMS->GetCurrentSaveUserName().Equals(ActiveSaveUser, ESearchCase::IgnoreCase)))
+	{
+		return true;
+	}
+	SetSlotUnavailable(FailedSlot, true);
 	if (!ReturnToPreviousSlot(PreviousSlot, FailedSlot))
 	{
 		// Still on the failed slot; the journal lets the next start recover it.
@@ -526,20 +545,103 @@ bool UEMSAutosaveSubsystem::ReturnAndDiscardFailedSave(const FString& PreviousSl
 		|| Failed.IsEmpty()
 		|| Failed.Equals(FSavePaths::ValidateSaveName(PreviousSlot), ESearchCase::IgnoreCase)
 		|| EMS->GetCurrentSaveGameName().Equals(Failed, ESearchCase::IgnoreCase)
-		|| !EMS->DoesSaveSlotExist(Failed))
+		|| !DoesSaveSlotRemain(Failed))
 	{
 		return true;
 	}
 
 	// EMS refuses the delete while one of its tasks is running.
 	EMS->DeleteAllSaveDataForSlot(Failed);
-	if (EMS->DoesSaveSlotExist(Failed))
+	if (DoesSaveSlotRemain(Failed))
 	{
 		LogMessage(FString::Printf(TEXT("The save of %s failed and its incomplete data could not be deleted. Do not load it."), *Failed), true);
 	}
 	else
 	{
+		SetSlotUnavailable(Failed, false);
 		LogMessage(FString::Printf(TEXT("The save of %s failed; its incomplete data was deleted."), *Failed), true);
+	}
+	return true;
+}
+
+bool UEMSAutosaveSubsystem::HasWrittenActiveSlotInfo() const
+{
+	UEMSObject* EMS = UEMSObject::Get(this);
+	const UEMSInfoSaveGame* Info = EMS ? EMS->GetSlotInfoObject(ActiveSaveSlot) : nullptr;
+	// EMS 1.85/1.86 do not propagate this write's result to the actor-save task.
+	// They update this clock only after a successful write and restore the old info on failure.
+	if (!Info || Info->LastSaveAttemptTime < ActiveSlotInfoWriteStartSeconds)
+	{
+		LogMessage(TEXT("The actor save finished, but EMS did not write its slot info. The save is incomplete."), true);
+		return false;
+	}
+	return true;
+}
+
+bool UEMSAutosaveSubsystem::DoesSaveSlotRemain(const FString& SlotName) const
+{
+	const UEMSObject* EMS = UEMSObject::Get(this);
+	// Desktop EMS also lists directories whose Slot Info was removed but whose
+	// remaining custom files could not be deleted. Slot Info alone cannot prove cleanup.
+	return EMS && (EMS->DoesSaveSlotExist(SlotName)
+		|| EMS->GetSortedSaveSlots().ContainsByPredicate([&SlotName](const FString& Slot)
+		{
+			return Slot.Equals(SlotName, ESearchCase::IgnoreCase);
+		}));
+}
+
+bool UEMSAutosaveSubsystem::IsSlotUnavailable(const FString& SlotName) const
+{
+	const UEMSObject* EMS = UEMSObject::Get(this);
+	const TSet<FString>* Slots = EMS ? UnavailableSlots.Find(EMS->GetCurrentSaveUserName().ToLower()) : nullptr;
+	return Slots && Slots->Contains(FSavePaths::ValidateSaveName(SlotName).ToLower());
+}
+
+void UEMSAutosaveSubsystem::SetSlotUnavailable(const FString& SlotName, const bool bUnavailable)
+{
+	const UEMSObject* EMS = UEMSObject::Get(this);
+	if (!EMS || SlotName.IsEmpty())
+	{
+		return;
+	}
+	TSet<FString>& Slots = UnavailableSlots.FindOrAdd(EMS->GetCurrentSaveUserName().ToLower());
+	const FString Slot = FSavePaths::ValidateSaveName(SlotName).ToLower();
+	if (bUnavailable)
+	{
+		Slots.Add(Slot);
+	}
+	else
+	{
+		Slots.Remove(Slot);
+	}
+}
+
+bool UEMSAutosaveSubsystem::PreflightCarriedCustomFiles(const FString& SourceSlot, const FString& TargetSlot,
+	const bool bIncludeCheckpointRecord) const
+{
+	const UEMSObject* EMS = UEMSObject::Get(this);
+	if (!EMS)
+	{
+		return false;
+	}
+	if (SourceSlot.Equals(TargetSlot, ESearchCase::IgnoreCase))
+	{
+		return true;
+	}
+	for (const FString& File : GetCarriedCustomFiles(bIncludeCheckpointRecord))
+	{
+		if (!EMS->DoesCustomSaveExist(SourceSlot, File))
+		{
+			continue;
+		}
+		const FString Path = EMS->CustomSaveFile(File, SourceSlot);
+		TArray<uint8> Data;
+		if (FSaveFileIntegrity::LoadFromFile(FFileContext(0, Path), Data) != EFileValidity::FILE_VALID
+			|| !FSaveFileIntegrity::VerifyLocalFile(Path, Data))
+		{
+			LogMessage(FString::Printf(TEXT("Could not read carried custom file %s from %s."), *File, *SourceSlot), true);
+			return false;
+		}
 	}
 	return true;
 }
@@ -650,9 +752,9 @@ bool UEMSAutosaveSubsystem::LoadSave(const FString& SlotName)
 	}
 
 	const FString Slot = FSavePaths::ValidateSaveName(SlotName);
-	if (Slot.IsEmpty() || !EMS->DoesSaveSlotExist(Slot))
+	if (Slot.IsEmpty() || IsSlotUnavailable(Slot) || !EMS->DoesSaveSlotExist(Slot))
 	{
-		LogMessage(FString::Printf(TEXT("Load Save refused %s: the slot does not exist."), *SlotName), true);
+		LogMessage(FString::Printf(TEXT("Load Save refused %s: the slot does not exist or is known to be incomplete."), *SlotName), true);
 		return false;
 	}
 

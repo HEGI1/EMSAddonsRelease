@@ -255,7 +255,8 @@ bool UEMSAutosaveSubsystem::EnqueueRequest(
 	AEMSCheckpoint* CheckpointActor,
 	const FText& DisplayName)
 {
-	if (Profile.IsEmpty() || (CheckpointRecord && !IsValid(CheckpointActor)))
+	const UEMSObject* EMS = UEMSObject::Get(this);
+	if (!EMS || Profile.IsEmpty() || (CheckpointRecord && !IsValid(CheckpointActor)))
 	{
 		return false;
 	}
@@ -263,6 +264,7 @@ bool UEMSAutosaveSubsystem::EnqueueRequest(
 	FName CanceledReason;
 	if (PendingRequest.IsPending()
 		&& (!PendingRequest.IsForSlot(Profile)
+			|| !PendingRequest.IsForUser(EMS->GetCurrentSaveUserName())
 			|| (CheckpointRecord && PendingRequest.IsCheckpoint()
 				&& PendingCheckpointActor.Get() != CheckpointActor)))
 	{
@@ -276,7 +278,7 @@ bool UEMSAutosaveSubsystem::EnqueueRequest(
 		CheckpointActor->MarkActivationPending();
 	}
 
-	PendingRequest.Enqueue(Reason, Profile, CheckpointRecord, DisplayName);
+	PendingRequest.Enqueue(Reason, Profile, CheckpointRecord, DisplayName, EMS->GetCurrentSaveUserName());
 	// Publish the replacement before user code can retry the canceled checkpoint.
 	// A nested request may supersede this one, but nothing overwrites it afterward.
 	if (!CanceledReason.IsNone())
@@ -376,9 +378,9 @@ void UEMSAutosaveSubsystem::TryStartPendingSave()
 	}
 
 	UEMSObject* EMS = UEMSObject::Get(this);
-	if (!EMS || !PendingRequest.IsForSlot(GetSaveProfile()))
+	if (!EMS || !PendingRequest.IsForSlot(GetSaveProfile()) || !PendingRequest.IsForUser(EMS->GetCurrentSaveUserName()))
 	{
-		CancelPendingRequest(TEXT("Pending autosave canceled because its save profile is no longer active."), true);
+		CancelPendingRequest(TEXT("Pending autosave canceled because its EMS user or save profile is no longer active."), true);
 		return;
 	}
 
@@ -451,6 +453,12 @@ void UEMSAutosaveSubsystem::StartSave(
 	// EMS actor saves never write custom saves, so the save itself cannot overwrite them.
 	// A checkpoint slot keeps its own record until the checkpoint commits a new one.
 	const FString PreviousSlot = EMS->GetCurrentSaveGameName();
+	const FString SaveUser = EMS->GetCurrentSaveUserName();
+	if (!PreflightCarriedCustomFiles(PreviousSlot, TargetSlot, CheckpointRecord == nullptr))
+	{
+		FailBeforeStart(TEXT("The save was not started because a carried custom file could not be read. The target was not changed."));
+		return;
+	}
 
 	// The target may hold a checkpoint's save (an earlier save of this checkpoint slot, or
 	// a 1.1 checkpoint in the profile slot). Retire that record before anything is written,
@@ -463,6 +471,7 @@ void UEMSAutosaveSubsystem::StartSave(
 	}
 	if (!CarryCustomFiles(PreviousSlot, TargetSlot, CheckpointRecord == nullptr))
 	{
+		SetSlotUnavailable(TargetSlot, true);
 		FailBeforeStart(TEXT("The save was not started because its carried custom files could not be copied into the target slot."));
 		return;
 	}
@@ -532,6 +541,8 @@ void UEMSAutosaveSubsystem::StartSave(
 	ActiveDisplayName = CheckpointRecord ? CheckpointRecord->DisplayName : DisplayName;
 	ActiveSaveType = CheckpointRecord ? EEMSSaveSlotType::Checkpoint : SaveType;
 	ActiveSaveSlot = SaveSlot;
+	ActiveSaveUser = SaveUser;
+	ActiveSlotInfoWriteStartSeconds = FPlatformTime::Seconds();
 	ActivePreviousSlot = PreviousSlot;
 	bActiveRequestIsCheckpoint = CheckpointRecord != nullptr;
 	ActiveCheckpoint = CheckpointRecord ? *CheckpointRecord : FEMSCheckpointRecord();
@@ -552,10 +563,12 @@ void UEMSAutosaveSubsystem::StartSave(
 		// current again (a later save writes it). EMS refuses the delete while other work runs.
 		if (bRemovedTargetLevelData)
 		{
+			UnavailableSlots.FindOrAdd(SaveUser.ToLower()).Add(FSavePaths::ValidateSaveName(SaveSlot).ToLower());
 			if (UEMSObject* CurrentEMS = UEMSObject::Get(this);
-				CurrentEMS && !CurrentEMS->GetCurrentSaveGameName().Equals(SaveSlot, ESearchCase::IgnoreCase))
+				CurrentEMS && CurrentEMS->GetCurrentSaveUserName().Equals(SaveUser, ESearchCase::IgnoreCase)
+				&& !CurrentEMS->GetCurrentSaveGameName().Equals(SaveSlot, ESearchCase::IgnoreCase))
 			{
-				CurrentEMS->DeleteAllSaveDataForSlot(SaveSlot);
+				ReturnAndDiscardFailedSave(PreviousSlot, SaveSlot);
 			}
 		}
 		RestorePauseForAbandonedTask();
@@ -570,6 +583,7 @@ void UEMSAutosaveSubsystem::StartSave(
 		|| World->bIsTearingDown
 		|| !EMSAddons::HasPersistenceAuthority(World->GetNetMode())
 		|| !EMS
+		|| !EMS->GetCurrentSaveUserName().Equals(SaveUser, ESearchCase::IgnoreCase)
 		|| !EMS->GetCurrentSaveGameName().Equals(SaveSlot, ESearchCase::IgnoreCase)
 		|| EMS->IsAsyncTaskActive(false)
 		|| IsCheckpointLoadInProgress()
@@ -577,14 +591,15 @@ void UEMSAutosaveSubsystem::StartSave(
 		|| (IsAutosaveBlocked() && Reason != ManualSaveReason))
 	{
 		const TWeakObjectPtr<AEMSCheckpoint> AbortedActor = ActiveCheckpointActor;
+		if (bRemovedTargetLevelData && EMS && !EMS->GetCurrentSaveUserName().Equals(SaveUser, ESearchCase::IgnoreCase))
+		{
+			UnavailableSlots.FindOrAdd(SaveUser.ToLower()).Add(FSavePaths::ValidateSaveName(SaveSlot).ToLower());
+		}
 		// EMS refuses the switch back while a callback's EMS task runs. Then the journal
 		// stays, so the next start returns to the previous slot.
-		ResetActiveSaveState(false);
+		const bool bReturned = ReturnFromAbandonedSave(PreviousSlot, SaveSlot, bRemovedTargetLevelData);
+		ResetActiveSaveState(bReturned);
 		RestorePauseForAbandonedTask();
-		if (ReturnFromAbandonedSave(PreviousSlot, SaveSlot, bRemovedTargetLevelData))
-		{
-			ClearSaveJournal();
-		}
 		if (AbortedActor.IsValid())
 		{
 			AbortedActor->MarkActivationFailed();
@@ -605,6 +620,8 @@ void UEMSAutosaveSubsystem::ResetActiveSaveState(const bool bClearJournal)
 	ActiveDisplayName = FText();
 	ActiveSaveType = EEMSSaveSlotType::Autosave;
 	ActiveSaveSlot.Reset();
+	ActiveSaveUser.Reset();
+	ActiveSlotInfoWriteStartSeconds = DBL_MAX;
 	ActivePreviousSlot.Reset();
 	bActiveRequestIsCheckpoint = false;
 	ActiveCheckpoint = FEMSCheckpointRecord();
@@ -687,17 +704,20 @@ bool UEMSAutosaveSubsystem::RecoverInterruptedSave()
 	{
 		return false;
 	}
-	ClearSaveJournal();
-
 	UEMSObject* EMS = UEMSObject::Get(this);
-	if (!EMS
-		|| !EMS->GetCurrentSaveUserName().Equals(User, ESearchCase::IgnoreCase)
+	if (!EMS)
+	{
+		return false;
+	}
+	if (!EMS->GetCurrentSaveUserName().Equals(User, ESearchCase::IgnoreCase)
 		|| !EMS->GetCurrentSaveGameName().Equals(Slot, ESearchCase::IgnoreCase))
 	{
 		// The game already moved on to another slot or user; the journal no longer applies.
+		ClearSaveJournal();
 		return false;
 	}
-	if (Previous.IsEmpty() || !EMS->DoesSaveSlotExist(Previous))
+	SetSlotUnavailable(Slot, true);
+	if (Previous.IsEmpty() || !EMS->DoesSaveSlotExist(Previous) || IsSlotUnavailable(Previous))
 	{
 		LogMessage(FString::Printf(TEXT("The game ended while saving %s, which may be incomplete. There is no earlier save to continue from."), *Slot), true);
 		return false;
@@ -711,8 +731,14 @@ bool UEMSAutosaveSubsystem::RecoverInterruptedSave()
 	}
 
 	// The slot was being overwritten, so it holds neither its old save nor a complete new one.
+	// Once the switch succeeded, later progress in Previous supersedes this journal. Do not
+	// retain a stale deletion instruction that could delete a legitimate future save of Slot.
 	EMS->DeleteAllSaveDataForSlot(Slot);
-	LogMessage(FString::Printf(TEXT("The game ended while saving %s. Continuing from %s; the incomplete save was deleted."), *Slot, *Previous), true);
+	const bool bDeleted = !DoesSaveSlotRemain(Slot);
+	SetSlotUnavailable(Slot, !bDeleted);
+	ClearSaveJournal();
+	LogMessage(FString::Printf(TEXT("The game ended while saving %s. Continuing from %s; the incomplete save %s."),
+		*Slot, *Previous, bDeleted ? TEXT("was deleted") : TEXT("could not be deleted and is unavailable for this session")), true);
 	return true;
 }
 
@@ -776,7 +802,8 @@ void UEMSAutosaveSubsystem::HandleSaveCompleted()
 	AddonSaveSlotAwaitingActorsSaved = CompletedSlot;
 
 	UEMSObject* EMS = UEMSObject::Get(this);
-	if (!EMS || !EMS->GetCurrentSaveGameName().Equals(CompletedSlot, ESearchCase::IgnoreCase))
+	if (!EMS || !EMS->GetCurrentSaveUserName().Equals(ActiveSaveUser, ESearchCase::IgnoreCase)
+		|| !EMS->GetCurrentSaveGameName().Equals(CompletedSlot, ESearchCase::IgnoreCase))
 	{
 		ResetActiveSaveState();
 		if (CompletedActor.IsValid())
@@ -790,7 +817,7 @@ void UEMSAutosaveSubsystem::HandleSaveCompleted()
 
 	// Keep the interrupted-save journal until the snapshot's label is durable too.
 	// A metadata failure must not expose an overwritten save with its old label.
-	if (!WriteSaveSlotMetadata(CompletedSlot, CompletedDisplayName, CompletedSaveType))
+	if (!HasWrittenActiveSlotInfo() || !WriteSaveSlotMetadata(CompletedSlot, CompletedDisplayName, CompletedSaveType))
 	{
 		ResetActiveSaveState(ReturnAndDiscardFailedSave(PreviousSlot, CompletedSlot));
 		if (CompletedActor.IsValid())
@@ -800,11 +827,12 @@ void UEMSAutosaveSubsystem::HandleSaveCompleted()
 		OnAutosaveFailed.Broadcast(CompletedReason);
 		return;
 	}
-	ResetActiveSaveState();
-	LastSuccessfulSaveSeconds = FPlatformTime::Seconds();
 	const bool bCommitted = !bCheckpointSave || CommitCheckpoint(CompletedCheckpoint, CompletedSlot);
 	if (bCommitted)
 	{
+		SetSlotUnavailable(CompletedSlot, false);
+		ResetActiveSaveState();
+		LastSuccessfulSaveSeconds = FPlatformTime::Seconds();
 		if (bCheckpointSave)
 		{
 			// UEMSAsyncSaveGame broadcasts OnActorsSaved immediately after this node
@@ -814,13 +842,14 @@ void UEMSAutosaveSubsystem::HandleSaveCompleted()
 			{
 				CompletedActor->MarkActivationCommitted();
 			}
+			OnCheckpointCommitted.Broadcast(CompletedCheckpoint);
 		}
 		OnAutosaveCompleted.Broadcast(CompletedReason);
 	}
 	else
 	{
 		// Only a complete save stays current.
-		ReturnToPreviousSlot(PreviousSlot, CompletedSlot);
+		ResetActiveSaveState(ReturnAndDiscardFailedSave(PreviousSlot, CompletedSlot));
 		if (CompletedActor.IsValid())
 		{
 			CompletedActor->MarkActivationFailed();
@@ -882,7 +911,6 @@ bool UEMSAutosaveSubsystem::CommitCheckpoint(
 		return false;
 	}
 
-	OnCheckpointCommitted.Broadcast(Record);
 	return true;
 }
 
@@ -968,7 +996,7 @@ FEMSCheckpointRecord UEMSAutosaveSubsystem::GetCheckpointForSlot(const FString& 
 {
 	const FString Slot = FSavePaths::ValidateSaveName(SaveSlot);
 	FEMSCheckpointRecord Record;
-	EMSCheckpoint::ResolveRecord(Slot.IsEmpty() ? nullptr : ResolveCheckpointSave(Slot), Slot, Record);
+	EMSCheckpoint::ResolveRecord(Slot.IsEmpty() || IsSlotUnavailable(Slot) ? nullptr : ResolveCheckpointSave(Slot), Slot, Record);
 	return Record;
 }
 
