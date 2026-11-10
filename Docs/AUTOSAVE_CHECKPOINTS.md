@@ -25,11 +25,13 @@ All saves of one game share a **profile**, the current EMS slot name without the
 
 Generated slot IDs are lowercase, including the profile and name parts. Existing mixed-case saves retain their paths and are reused when saving to the same ID. With **Autosave Slot Count** 0, the caller-supplied profile slot remains unchanged. Display names keep their original capitalization.
 
+Because IDs are lowercase, manual save names and **Checkpoint Slot Name** values that differ only in case use the same slot. After a save to a generated slot, **Get Save Profile** returns the lowercase profile (for example `game1`), so compare profiles ignoring case.
+
 These endings are reserved regardless of case, so do not use them in profile names: `_autosave_<0-9>`, `_manual_<name>`, `_checkpoint`, `_checkpoint_<name>`.
 
 ## Save and load menus
 
-- **Get Save Slots** lists the profile's saves, newest first. Use EMS **Get Named Slot Info** and **Import Save Thumbnail** for details.
+- **Get Save Slots** lists the profile's saves, newest first. Use EMS **Get Named Slot Info** and **Import Save Thumbnail** for further details such as level and players.
 - **Get Save Slots With Details** returns the same list with **Slot Name**, **Display Name**, **Save Type** (Autosave, Manual, Checkpoint), and **Time Stamp**. **Get Save Slot Details** reads one existing slot; a missing slot returns false. These nodes do not change the current slot.
 - **Load Save** makes a slot current, opens its map and loads it. **On Save Loaded** / **On Save Load Failed** report the result.
 - **Get Save Profile** / **Get Slot Profile** return the profile of the current slot or of any slot name.
@@ -55,7 +57,7 @@ The addon stores these labels in the slot-bound custom file `EMSSlotMetadata`. I
 2. The player enters the trigger, or call **Activate Checkpoint** on the actor.
 3. Call **Load Last Checkpoint** to return. The player is placed at the trigger's center, also across maps.
 
-Checkpoints have their own slots, so autosaves and manual saves do not replace them, and each save remembers its checkpoint. Checkpoints with the same **Checkpoint Slot Name** share one slot. Use **Reset Checkpoint** to allow a **Trigger Once** checkpoint to activate again.
+Checkpoints have their own slots, so autosaves and manual saves do not replace them, and each save remembers its checkpoint. Checkpoints with the same **Checkpoint Slot Name** (ignoring case) share one slot. Use **Reset Checkpoint** to allow a **Trigger Once** checkpoint to activate again.
 
 ## Autosave blockers
 
@@ -121,4 +123,4 @@ The checkpoint actor also has **On Checkpoint Activated**.
 | **Activate On Player Overlap** | On | Activate when a player enters the trigger. |
 | **Trigger Once** | On | Activate only once until **Reset Checkpoint**. |
 | **Display Name** | Empty | Optional save-menu label, independent of the EMS slot name. |
-| **Checkpoint Slot Name** | Empty | Optional name of the checkpoint's slot. |
+| **Checkpoint Slot Name** | Empty | Optional name of the checkpoint's slot, stored lowercase. |

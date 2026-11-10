@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.2.5 - 2026-11-10
+
+### Documentation
+
+- **Autosave and Checkpoints:** describes that manual save names and **Checkpoint Slot Name** values differing only in case share one slot, and that **Get Save Profile** returns the lowercase profile after a save to a generated slot.
+
 ## 1.2.4 - 2026-11-10
 
 ### Changed
