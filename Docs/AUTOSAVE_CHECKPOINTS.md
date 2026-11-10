@@ -19,17 +19,35 @@ All saves of one game share a **profile**, the current EMS slot name without the
 | Save | EMS slot |
 | --- | --- |
 | Autosave, **Autosave Slot Count** 0 | `<Profile>` |
-| Autosave, **Autosave Slot Count** N | `<Profile>_Autosave_0` … `<Profile>_Autosave_<N-1>`; unused slots first, then the oldest |
-| **Manual Save** | `<Profile>_Manual_<Name>` |
-| Checkpoint | `<Profile>_Checkpoint`, or `<Profile>_Checkpoint_<Checkpoint Slot Name>` |
+| Autosave, **Autosave Slot Count** N | `<profile>_autosave_0` … `<profile>_autosave_<N-1>`; unused slots first, then the oldest |
+| **Manual Save** | `<profile>_manual_<name>` |
+| Checkpoint | `<profile>_checkpoint`, or `<profile>_checkpoint_<checkpoint slot name>` |
 
-These endings are reserved, so do not use them in profile names: `_Autosave_<0-9>`, `_Manual_<Name>`, `_Checkpoint`, `_Checkpoint_<Name>`.
+Generated slot IDs are lowercase, including the profile and name parts. Existing mixed-case saves retain their paths and are reused when saving to the same ID. With **Autosave Slot Count** 0, the caller-supplied profile slot remains unchanged. Display names keep their original capitalization.
+
+These endings are reserved regardless of case, so do not use them in profile names: `_autosave_<0-9>`, `_manual_<name>`, `_checkpoint`, `_checkpoint_<name>`.
 
 ## Save and load menus
 
 - **Get Save Slots** lists the profile's saves, newest first. Use EMS **Get Named Slot Info** and **Import Save Thumbnail** for details.
+- **Get Save Slots With Details** returns the same list with **Slot Name**, **Display Name**, **Save Type** (Autosave, Manual, Checkpoint), and **Time Stamp**. **Get Save Slot Details** reads one existing slot; a missing slot returns false. These nodes do not change the current slot.
 - **Load Save** makes a slot current, opens its map and loads it. **On Save Loaded** / **On Save Load Failed** report the result.
 - **Get Save Profile** / **Get Slot Profile** return the profile of the current slot or of any slot name.
+
+## Display names
+
+Display names are optional labels stored per save. The menu can show exactly `Factory Inner` while the internal EMS slot is `game1_checkpoint_factoryinner`. Use **Display Name** for menu text and **Slot Name** for **Load Save**, thumbnails, and EMS operations. Duplicate display names are allowed and never decide which save is overwritten.
+
+- **Checkpoints:** set the checkpoint actor's **Display Name** to `Factory Inner`. **Checkpoint Slot Name** still decides which checkpoints share and replace a save.
+- **Autosaves:** call **Set Autosave Display Name** when the player enters a location. Future gameplay, periodic, map-load, and map-leave autosaves capture that name. **Request Autosave** also has an optional **Display Name** input that overrides it for one request. Empty uses the current autosave display name. Queued requests keep the name captured when requested; when ordinary requests combine, the latest request's name wins.
+- **Manual saves:** **Manual Save** has an optional **Display Name** input for player-entered text. Empty uses **Save Name**. **Save Name** remains the internal identifier: calling with the same Save Name replaces that manual save, even when its display name differs. Use distinct Save Names for separate saves with identical labels.
+- **Renaming:** call **Set Save Slot Display Name** with an existing Slot Name. This changes only its label, preserving the save data, timestamp, and rotation order. It returns false while saving/loading, on clients, or if the slot does not exist. Empty or whitespace clears the alias and uses a fallback.
+
+Existing saves work without migration. Named manual/checkpoint slots fall back to their name suffix; unnamed checkpoints show `Checkpoint`; autosaves show `Autosave` or `Autosave 1`, `Autosave 2`, etc. Existing checkpoint records use their stored Display Name only for the actual checkpoint slot, not for later saves carrying that record.
+
+Names use Text, preserving spaces, punctuation, and localized checkpoint labels without filename sanitization. A name is saved with its snapshot; moving to a new location does not relabel older saves. **Set Autosave Display Name** is a game-session value: initialize/update it from your game's location state on new game, load, and map changes. It survives map travel and is not restored automatically from a loaded save.
+
+The addon stores these labels in the slot-bound custom file `EMSSlotMetadata`. It is internal and excluded from **Carried Custom Files**, so one save cannot inherit another save's label. A later save to the same slot replaces its label with that save's name. No change to EMS core or existing slot names is required.
 
 ## Checkpoints
 
@@ -47,6 +65,8 @@ Use **Add Autosave Blocker** / **Remove Autosave Blocker** to hold autosaves dur
 
 - **Request Autosave** / **Manual Save**
 - **Load Save** / **Get Save Slots** / **Get Save Profile** / **Get Slot Profile** / **Is Save Load In Progress**
+- **Get Save Slots With Details** / **Get Save Slot Details** / **Set Save Slot Display Name**
+- **Set Autosave Display Name** / **Get Autosave Display Name**
 - **Load Last Checkpoint** / **Has Checkpoint** / **Get Current Checkpoint**
 - **Add Carried Custom File** / **Remove Carried Custom File**
 - **Add Autosave Blocker** / **Remove Autosave Blocker** / **Is Autosave Blocked** / **Is Autosave Active**
@@ -100,5 +120,5 @@ The checkpoint actor also has **On Checkpoint Activated**.
 | --- | --- | --- |
 | **Activate On Player Overlap** | On | Activate when a player enters the trigger. |
 | **Trigger Once** | On | Activate only once until **Reset Checkpoint**. |
-| **Display Name** | Empty | Optional name. |
+| **Display Name** | Empty | Optional save-menu label, independent of the EMS slot name. |
 | **Checkpoint Slot Name** | Empty | Optional name of the checkpoint's slot. |

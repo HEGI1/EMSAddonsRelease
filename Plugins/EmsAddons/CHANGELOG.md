@@ -1,5 +1,20 @@
 # Changelog
 
+## 1.2.4 - 2026-11-10
+
+### Changed
+
+- **Autosave and Checkpoints:** generated autosave, manual, and checkpoint slot IDs are lowercase. Existing mixed-case slots are reused with their original paths; display-name capitalization is preserved.
+
+### Added
+
+- **Autosave and Checkpoints:** persistent display names independent of EMS slot identifiers. Checkpoints use their **Display Name**; **Manual Save** and **Request Autosave** accept an optional **Display Name**. **Set Autosave Display Name** supplies the location label for future automatic saves.
+- **Get Save Slots With Details**, **Get Save Slot Details**, and **Set Save Slot Display Name** support save menus and label-only renaming. Renaming preserves timestamps and rotation order. Existing saves receive fallback labels without migration; duplicate aliases are allowed.
+
+### Maintenance
+
+- **Release checks:** publisher integration tests follow the current plugin version instead of assuming a fixed release number. Version metadata continues to be applied only when publishing.
+
 ## 1.2.3 - 2026-11-09
 
 ### Documentation

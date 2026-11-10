@@ -64,7 +64,7 @@ public:
 	/**
 	 * Number of rotating autosave slots per profile.
 	 * Zero: autosaves write the profile slot itself ("<Profile>"), as in 1.1.
-	 * N: autosaves write "<Profile>_Autosave_0" to "<Profile>_Autosave_<N-1>", replacing the oldest.
+	 * N: autosaves write lowercase "<profile>_autosave_0" to "<profile>_autosave_<N-1>", replacing the oldest.
 	 * Every autosave makes its slot the current EMS slot, so a normal EMS load continues from the newest save.
 	 */
 	UPROPERTY(Config, EditAnywhere, Category = "Save Slots", meta = (ClampMin = "0", ClampMax = "10", UIMin = "0", UIMax = "10"))

@@ -59,6 +59,8 @@ bool UEMSAutosaveSubsystem::BeginSynchronousAutosave(
 	// a listener, but TryStartPendingSave then sees bSaveActive and only queues it.
 	bSaveActive = true;
 	ActiveReason = Reason;
+	ActiveDisplayName = AutosaveDisplayName;
+	ActiveSaveType = EEMSSaveSlotType::Autosave;
 	ActiveSaveSlot = SaveSlot;
 	ActivePreviousSlot = CurrentSlot;
 	bActiveRequestIsCheckpoint = false;
@@ -81,7 +83,7 @@ bool UEMSAutosaveSubsystem::BeginSynchronousAutosave(
 }
 
 void UEMSAutosaveSubsystem::CompleteSynchronousAutosave(
-	const bool bSuccess,
+	bool bSuccess,
 	const int32 SaveDataFlags)
 {
 	if (!bSaveActive || ActiveSaveTask)
@@ -92,6 +94,10 @@ void UEMSAutosaveSubsystem::CompleteSynchronousAutosave(
 	const FName CompletedReason = ActiveReason;
 	const FString CompletedSlot = ActiveSaveSlot;
 	AddonSaveSlotAwaitingActorsSaved = CompletedSlot;
+	if (bSuccess)
+	{
+		bSuccess = WriteSaveSlotMetadata(CompletedSlot, ActiveDisplayName, ActiveSaveType);
+	}
 
 	if (bSuccess)
 	{

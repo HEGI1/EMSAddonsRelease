@@ -12,7 +12,8 @@ struct EMSADDONSAUTOSAVE_API FEMSAutosavePendingRequest
 		return FMath::Max(0.0, static_cast<double>(FMath::Max(0.0f, MinimumInterval)) - (NowSeconds - LastSaveSeconds));
 	}
 
-	void Enqueue(const FName InReason, const FString& InSaveSlot, const FEMSCheckpointRecord* InCheckpoint)
+	void Enqueue(const FName InReason, const FString& InSaveSlot, const FEMSCheckpointRecord* InCheckpoint,
+		const FText& InDisplayName = FText())
 	{
 		const bool bDifferentSlot = bPending && !SaveSlot.Equals(InSaveSlot, ESearchCase::IgnoreCase);
 		if (bDifferentSlot)
@@ -25,6 +26,7 @@ struct EMSADDONSAUTOSAVE_API FEMSAutosavePendingRequest
 			Reason = InReason;
 			SaveSlot = InSaveSlot;
 			Checkpoint = *InCheckpoint;
+			DisplayName = InCheckpoint->DisplayName;
 			bCheckpoint = true;
 			bPending = true;
 		}
@@ -33,12 +35,14 @@ struct EMSADDONSAUTOSAVE_API FEMSAutosavePendingRequest
 			Reason = InReason;
 			SaveSlot = InSaveSlot;
 			Checkpoint = FEMSCheckpointRecord();
+			DisplayName = InDisplayName;
 			bCheckpoint = false;
 			bPending = true;
 		}
 	}
 
-	bool Consume(FName& OutReason, FString& OutSaveSlot, bool& bOutCheckpoint, FEMSCheckpointRecord& OutCheckpoint)
+	bool Consume(FName& OutReason, FString& OutSaveSlot, bool& bOutCheckpoint, FEMSCheckpointRecord& OutCheckpoint,
+		FText* OutDisplayName = nullptr)
 	{
 		if (!bPending)
 		{
@@ -48,6 +52,10 @@ struct EMSADDONSAUTOSAVE_API FEMSAutosavePendingRequest
 		OutSaveSlot = SaveSlot;
 		bOutCheckpoint = bCheckpoint;
 		OutCheckpoint = Checkpoint;
+		if (OutDisplayName)
+		{
+			*OutDisplayName = DisplayName;
+		}
 		Reset();
 		return true;
 	}
@@ -56,6 +64,7 @@ struct EMSADDONSAUTOSAVE_API FEMSAutosavePendingRequest
 	{
 		Reason = NAME_None;
 		SaveSlot.Reset();
+		DisplayName = FText();
 		Checkpoint = FEMSCheckpointRecord();
 		bPending = false;
 		bCheckpoint = false;
@@ -73,6 +82,7 @@ struct EMSADDONSAUTOSAVE_API FEMSAutosavePendingRequest
 private:
 	FName Reason;
 	FString SaveSlot;
+	FText DisplayName;
 	FEMSCheckpointRecord Checkpoint;
 	bool bPending = false;
 	bool bCheckpoint = false;

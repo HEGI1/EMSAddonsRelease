@@ -39,9 +39,10 @@ enum class EEMSSlotSwitch : uint8
  * is switched to the target slot and a normal EMS save runs. The newest save stays
  * the current slot, so "Continue" is a normal EMS load.
  *
- * - Autosaves: "<Profile>" (Autosave Slot Count 0) or "<Profile>_Autosave_<0..N-1>", oldest replaced first.
- * - Manual saves: "<Profile>_Manual_<Name>".
- * - Checkpoints: "<Profile>_Checkpoint" or "<Profile>_Checkpoint_<Name>", named on the checkpoint actor.
+ * - Autosaves: "<Profile>" (Autosave Slot Count 0) or "<profile>_autosave_<0..N-1>", oldest replaced first.
+ * - Manual saves: "<profile>_manual_<name>".
+ * - Checkpoints: "<profile>_checkpoint" or "<profile>_checkpoint_<name>", named on the checkpoint actor.
+ * Generated IDs are lowercase; existing saves retain their original spelling.
  *
  * EMS stores the current slot in its user config as soon as it changes. While a save runs, the slot it
  * writes and the slot it left are kept in the same config, so a game that ends during the save continues
@@ -94,18 +95,27 @@ public:
 
 	/**
 	 * Queues an autosave of the configured EMS data into the next autosave slot of the current profile.
-	 * Returns false on clients or while EMS is loading; load/restore is a cancellation boundary and autosaves are not queued across it.
+	 * Display Name overrides the current autosave display name for this request. Empty uses that current name.
+	 * The name is captured when requested, including while blocked. Returns false on clients or while EMS is loading.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "EMS Addons|Autosave and Checkpoints|Autosave", meta = (DisplayName = "Request Autosave"))
-	bool RequestAutosave(FName Reason = NAME_None);
+	bool RequestAutosave(FName Reason = NAME_None, FText DisplayName = FText());
+
+	/** Sets the location/name captured by future autosaves, including periodic and map-leave saves. Session only. */
+	UFUNCTION(BlueprintCallable, Category = "EMS Addons|Autosave and Checkpoints|Autosave")
+	void SetAutosaveDisplayName(FText DisplayName) { AutosaveDisplayName = DisplayName; }
+
+	UFUNCTION(BlueprintPure, Category = "EMS Addons|Autosave and Checkpoints|Autosave")
+	FText GetAutosaveDisplayName() const { return AutosaveDisplayName; }
 
 	/**
-	 * Saves the configured EMS data into "<Profile>_Manual_<SaveName>" now, replacing an earlier save of that name.
+	 * Saves the configured EMS data into lowercase "<profile>_manual_<savename>" now, replacing an earlier save of that name.
 	 * Enable Autosave, blockers and the minimum interval do not apply. Returns false when EMS or another addon
 	 * save is busy, or level streaming is not ready; the result is reported through the autosave events with Reason "Manual".
+	 * Display Name is presentation only and defaults to SaveName. SaveName still determines which slot is replaced.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "EMS Addons|Autosave and Checkpoints|Saves", meta = (DisplayName = "Manual Save"))
-	bool ManualSave(const FString& SaveName);
+	bool ManualSave(const FString& SaveName, FText DisplayName = FText());
 
 	/**
 	 * Loads any existing EMS slot, for example one from Get Save Slots.
@@ -126,6 +136,18 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "EMS Addons|Autosave and Checkpoints|Saves", meta = (DisplayName = "Get Save Slots"))
 	TArray<FString> GetSaveSlots();
 
+	/** Returns the current profile's saves, newest first, with names suitable for a save menu. */
+	UFUNCTION(BlueprintCallable, Category = "EMS Addons|Autosave and Checkpoints|Saves")
+	TArray<FEMSSaveSlotDetails> GetSaveSlotsWithDetails();
+
+	/** Reads an existing save without switching the current slot. Old saves receive a fallback name. */
+	UFUNCTION(BlueprintCallable, Category = "EMS Addons|Autosave and Checkpoints|Saves")
+	bool GetSaveSlotDetails(const FString& SlotName, FEMSSaveSlotDetails& Details);
+
+	/** Renames an existing save's display label only. Empty clears the alias and uses a fallback name. Refuses while busy. */
+	UFUNCTION(BlueprintCallable, Category = "EMS Addons|Autosave and Checkpoints|Saves")
+	bool SetSaveSlotDisplayName(const FString& SlotName, FText DisplayName);
+
 	/** Returns the profile of the current EMS slot. Saves of one profile share it as their name prefix. */
 	UFUNCTION(BlueprintPure, Category = "EMS Addons|Autosave and Checkpoints|Saves", meta = (DisplayName = "Get Save Profile"))
 	FString GetSaveProfile() const;
@@ -145,13 +167,13 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "EMS Addons|Autosave and Checkpoints|Saves", meta = (DisplayName = "Remove Carried Custom File"))
 	void RemoveCarriedCustomFile(const FString& FileName);
 
-	/** Name of autosave slot Index (0-based) of a profile, as EMS stores it. */
+	/** Lowercase ID of autosave slot Index (0-based) of a profile, as EMS stores it. */
 	static FString MakeAutosaveSlotName(const FString& Profile, int32 Index);
 
-	/** Name of a manual save slot of a profile, as EMS stores it. */
+	/** Lowercase ID of a manual save slot of a profile, as EMS stores it. */
 	static FString MakeManualSlotName(const FString& Profile, const FString& SaveName);
 
-	/** Name of a checkpoint slot of a profile, as EMS stores it. An empty name gives "<Profile>_Checkpoint". */
+	/** Lowercase ID of a checkpoint slot of a profile. An empty name gives "<profile>_checkpoint". */
 	static FString MakeCheckpointSlotName(const FString& Profile, const FString& CheckpointSlotName);
 
 	/**
@@ -287,7 +309,9 @@ protected:
 		const FString& Profile,
 		const FString& TargetSlot,
 		const FEMSCheckpointRecord* CheckpointRecord,
-		AEMSCheckpoint* CheckpointActor);
+		AEMSCheckpoint* CheckpointActor,
+		const FText& DisplayName = FText(),
+		EEMSSaveSlotType SaveType = EEMSSaveSlotType::Autosave);
 
 private:
 	UPROPERTY(Transient)
@@ -303,6 +327,9 @@ private:
 	FTimerHandle PeriodicTimer;
 	FTimerHandle MapLoadTimer;
 	FName ActiveReason;
+	FText AutosaveDisplayName;
+	FText ActiveDisplayName;
+	EEMSSaveSlotType ActiveSaveType = EEMSSaveSlotType::Autosave;
 	/** The slot the active save writes. */
 	FString ActiveSaveSlot;
 	/** The current slot before the active save switched away from it. A save that fails returns to it. */
@@ -360,14 +387,20 @@ private:
 		FName Reason,
 		const FString& Profile,
 		const FEMSCheckpointRecord* CheckpointRecord,
-		AEMSCheckpoint* CheckpointActor);
+		AEMSCheckpoint* CheckpointActor,
+		const FText& DisplayName = FText());
 
 	/** Queues without starting, for callers already inside the start path. */
 	bool EnqueueRequest(
 		FName Reason,
 		const FString& Profile,
 		const FEMSCheckpointRecord* CheckpointRecord,
-		AEMSCheckpoint* CheckpointActor);
+		AEMSCheckpoint* CheckpointActor,
+		const FText& DisplayName = FText());
+
+	bool WriteSaveSlotMetadata(const FString& SlotName, const FText& DisplayName, EEMSSaveSlotType SaveType);
+	/** Resolves a generated ID to the original spelling of an existing slot, for pre-lowercase saves. */
+	FString ResolveSaveSlotTarget(const FString& SlotName) const;
 
 	bool CanStartSave(const FString& RequestedProfile, float& OutRetryDelay) const;
 	bool IsLevelStreamingBlockingSave() const;

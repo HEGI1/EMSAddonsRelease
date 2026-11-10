@@ -37,13 +37,14 @@ public:
 	UPROPERTY(VisibleInstanceOnly, BlueprintReadOnly, Category = "EMS Addons|Autosave and Checkpoints|Identity")
 	FGuid CheckpointId;
 
-	/** Optional designer-facing label copied into the stored checkpoint record. */
+	/** Optional save-menu display name, copied into this checkpoint's record and slot details. Does not change its EMS slot. */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "EMS Addons|Autosave and Checkpoints|Identity")
 	FText DisplayName;
 
 	/**
-	 * Names the EMS slot this checkpoint saves into: "<Profile>_Checkpoint" when empty, otherwise
-	 * "<Profile>_Checkpoint_<Checkpoint Slot Name>". Checkpoints sharing a name replace each other's save.
+	 * Names the EMS slot this checkpoint saves into: "<profile>_checkpoint" when empty, otherwise
+	 * "<profile>_checkpoint_<checkpoint slot name>". Generated IDs are lowercase; existing saves keep
+	 * their original spelling. Checkpoints sharing a name replace each other's save.
 	 */
 	UPROPERTY(EditAnywhere, BlueprintReadWrite, Category = "EMS Addons|Autosave and Checkpoints|Identity")
 	FString CheckpointSlotName;

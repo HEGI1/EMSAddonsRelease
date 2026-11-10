@@ -119,7 +119,7 @@ void UEMSAutosaveSubsystem::Deinitialize()
 	Super::Deinitialize();
 }
 
-bool UEMSAutosaveSubsystem::RequestAutosave(FName Reason)
+bool UEMSAutosaveSubsystem::RequestAutosave(FName Reason, FText DisplayName)
 {
 	const UEMSAutosaveSettings* Settings = GetDefault<UEMSAutosaveSettings>();
 	if (!Settings
@@ -146,7 +146,8 @@ bool UEMSAutosaveSubsystem::RequestAutosave(FName Reason)
 	// Requests belong to the profile, not to one slot: every save moves the current slot.
 	const FString Profile = GetSaveProfile();
 	return !Profile.IsEmpty()
-		&& QueueRequest(Reason.IsNone() ? DefaultAutosaveReason : Reason, Profile, nullptr, nullptr);
+		&& QueueRequest(Reason.IsNone() ? DefaultAutosaveReason : Reason, Profile, nullptr, nullptr,
+			DisplayName.IsEmptyOrWhitespace() ? AutosaveDisplayName : DisplayName);
 }
 
 bool UEMSAutosaveSubsystem::ActivateCheckpoint(AEMSCheckpoint* Checkpoint)
@@ -185,7 +186,7 @@ bool UEMSAutosaveSubsystem::ActivateCheckpoint(AEMSCheckpoint* Checkpoint)
 	Record.DisplayName = Checkpoint->DisplayName;
 	Record.World = EMSCheckpoint::GetWorldAssetPath(Checkpoint->GetWorld());
 	Record.ActivatedAt = FDateTime::UtcNow();
-	Record.SaveSlot = MakeCheckpointSlotName(Profile, Checkpoint->CheckpointSlotName);
+	Record.SaveSlot = ResolveSaveSlotTarget(MakeCheckpointSlotName(Profile, Checkpoint->CheckpointSlotName));
 	if (!Record.IsValid())
 	{
 		return false;
@@ -235,9 +236,10 @@ bool UEMSAutosaveSubsystem::QueueRequest(
 	FName Reason,
 	const FString& Profile,
 	const FEMSCheckpointRecord* CheckpointRecord,
-	AEMSCheckpoint* CheckpointActor)
+	AEMSCheckpoint* CheckpointActor,
+	const FText& DisplayName)
 {
-	if (!EnqueueRequest(Reason, Profile, CheckpointRecord, CheckpointActor))
+	if (!EnqueueRequest(Reason, Profile, CheckpointRecord, CheckpointActor, DisplayName))
 	{
 		return false;
 	}
@@ -250,7 +252,8 @@ bool UEMSAutosaveSubsystem::EnqueueRequest(
 	FName Reason,
 	const FString& Profile,
 	const FEMSCheckpointRecord* CheckpointRecord,
-	AEMSCheckpoint* CheckpointActor)
+	AEMSCheckpoint* CheckpointActor,
+	const FText& DisplayName)
 {
 	if (Profile.IsEmpty() || (CheckpointRecord && !IsValid(CheckpointActor)))
 	{
@@ -273,7 +276,7 @@ bool UEMSAutosaveSubsystem::EnqueueRequest(
 		CheckpointActor->MarkActivationPending();
 	}
 
-	PendingRequest.Enqueue(Reason, Profile, CheckpointRecord);
+	PendingRequest.Enqueue(Reason, Profile, CheckpointRecord, DisplayName);
 	// Publish the replacement before user code can retry the canceled checkpoint.
 	// A nested request may supersede this one, but nothing overwrites it afterward.
 	if (!CanceledReason.IsNone())
@@ -393,11 +396,12 @@ void UEMSAutosaveSubsystem::TryStartPendingSave()
 	FString Profile;
 	bool bIsCheckpoint = false;
 	FEMSCheckpointRecord Checkpoint;
-	PendingRequest.Consume(Reason, Profile, bIsCheckpoint, Checkpoint);
+	FText DisplayName;
+	PendingRequest.Consume(Reason, Profile, bIsCheckpoint, Checkpoint, &DisplayName);
 	AEMSCheckpoint* CheckpointActor = bIsCheckpoint ? PendingCheckpointActor.Get() : nullptr;
 	PendingCheckpointActor.Reset();
 	const FString TargetSlot = bIsCheckpoint ? Checkpoint.SaveSlot : ResolveAutosaveTarget(Profile);
-	StartSave(Reason, Profile, TargetSlot, bIsCheckpoint ? &Checkpoint : nullptr, CheckpointActor);
+	StartSave(Reason, Profile, TargetSlot, bIsCheckpoint ? &Checkpoint : nullptr, CheckpointActor, DisplayName);
 }
 
 void UEMSAutosaveSubsystem::ScheduleRetry(const float DelaySeconds)
@@ -414,7 +418,9 @@ void UEMSAutosaveSubsystem::StartSave(
 	const FString& Profile,
 	const FString& TargetSlot,
 	const FEMSCheckpointRecord* CheckpointRecord,
-	AEMSCheckpoint* CheckpointActor)
+	AEMSCheckpoint* CheckpointActor,
+	const FText& DisplayName,
+	const EEMSSaveSlotType SaveType)
 {
 	const UEMSAutosaveSettings* Settings = GetDefault<UEMSAutosaveSettings>();
 	UEMSObject* EMS = UEMSObject::Get(this);
@@ -498,7 +504,7 @@ void UEMSAutosaveSubsystem::StartSave(
 		// which reaches StartSave again with bSaveActive still false and recurses
 		// for as long as task creation keeps failing. The retry timer is the only
 		// thing that may drive the next attempt.
-		if (!EnqueueRequest(Reason, Profile, CheckpointRecord, CheckpointActor))
+		if (!EnqueueRequest(Reason, Profile, CheckpointRecord, CheckpointActor, DisplayName))
 		{
 			// A checkpoint whose actor has gone cannot be queued again. Report it
 			// rather than letting the request disappear without a callback.
@@ -523,6 +529,8 @@ void UEMSAutosaveSubsystem::StartSave(
 
 	bSaveActive = true;
 	ActiveReason = Reason;
+	ActiveDisplayName = CheckpointRecord ? CheckpointRecord->DisplayName : DisplayName;
+	ActiveSaveType = CheckpointRecord ? EEMSSaveSlotType::Checkpoint : SaveType;
 	ActiveSaveSlot = SaveSlot;
 	ActivePreviousSlot = PreviousSlot;
 	bActiveRequestIsCheckpoint = CheckpointRecord != nullptr;
@@ -594,6 +602,8 @@ void UEMSAutosaveSubsystem::ResetActiveSaveState(const bool bClearJournal)
 	bSaveActive = false;
 	ActiveSaveTask = nullptr;
 	ActiveReason = NAME_None;
+	ActiveDisplayName = FText();
+	ActiveSaveType = EEMSSaveSlotType::Autosave;
 	ActiveSaveSlot.Reset();
 	ActivePreviousSlot.Reset();
 	bActiveRequestIsCheckpoint = false;
@@ -758,27 +768,41 @@ void UEMSAutosaveSubsystem::HandleSaveCompleted()
 	const FName CompletedReason = ActiveReason;
 	const FString CompletedSlot = ActiveSaveSlot;
 	const FString PreviousSlot = ActivePreviousSlot;
+	const FText CompletedDisplayName = ActiveDisplayName;
+	const EEMSSaveSlotType CompletedSaveType = ActiveSaveType;
 	const bool bCheckpointSave = bActiveRequestIsCheckpoint;
 	const FEMSCheckpointRecord CompletedCheckpoint = ActiveCheckpoint;
 	const TWeakObjectPtr<AEMSCheckpoint> CompletedActor = ActiveCheckpointActor;
 	AddonSaveSlotAwaitingActorsSaved = CompletedSlot;
-	ResetActiveSaveState();
 
 	UEMSObject* EMS = UEMSObject::Get(this);
 	if (!EMS || !EMS->GetCurrentSaveGameName().Equals(CompletedSlot, ESearchCase::IgnoreCase))
 	{
+		ResetActiveSaveState();
 		if (CompletedActor.IsValid())
 		{
 			CompletedActor->MarkActivationFailed();
 		}
-		LogMessage(TEXT("Autosave completed after the current EMS save slot changed; the checkpoint record was not written."), true);
+		LogMessage(TEXT("Autosave completed after the current EMS save slot changed; its metadata was not written."), true);
 		OnAutosaveFailed.Broadcast(CompletedReason);
 		return;
 	}
 
+	// Keep the interrupted-save journal until the snapshot's label is durable too.
+	// A metadata failure must not expose an overwritten save with its old label.
+	if (!WriteSaveSlotMetadata(CompletedSlot, CompletedDisplayName, CompletedSaveType))
+	{
+		ResetActiveSaveState(ReturnAndDiscardFailedSave(PreviousSlot, CompletedSlot));
+		if (CompletedActor.IsValid())
+		{
+			CompletedActor->MarkActivationFailed();
+		}
+		OnAutosaveFailed.Broadcast(CompletedReason);
+		return;
+	}
+	ResetActiveSaveState();
 	LastSuccessfulSaveSeconds = FPlatformTime::Seconds();
-	const bool bCommitted = !bCheckpointSave
-		|| CommitCheckpoint(CompletedCheckpoint, CompletedSlot);
+	const bool bCommitted = !bCheckpointSave || CommitCheckpoint(CompletedCheckpoint, CompletedSlot);
 	if (bCommitted)
 	{
 		if (bCheckpointSave)

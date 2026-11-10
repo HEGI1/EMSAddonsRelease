@@ -4,6 +4,34 @@
 #include "CoreMinimal.h"
 #include "EMSAutosaveTypes.generated.h"
 
+UENUM(BlueprintType)
+enum class EEMSSaveSlotType : uint8
+{
+	Autosave,
+	Manual,
+	Checkpoint
+};
+
+/** Menu data for a save. Display Name is presentation only; use Slot Name to load or overwrite. */
+USTRUCT(BlueprintType)
+struct EMSADDONSAUTOSAVE_API FEMSSaveSlotDetails
+{
+	GENERATED_BODY()
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "EMS Addons|Autosave and Checkpoints|Saves")
+	FString SlotName;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "EMS Addons|Autosave and Checkpoints|Saves")
+	FText DisplayName;
+
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "EMS Addons|Autosave and Checkpoints|Saves")
+	EEMSSaveSlotType SaveType = EEMSSaveSlotType::Autosave;
+
+	/** EMS save time, as returned by Get Named Slot Info. Renaming does not change it. */
+	UPROPERTY(VisibleAnywhere, BlueprintReadOnly, Category = "EMS Addons|Autosave and Checkpoints|Saves")
+	FDateTime TimeStamp;
+};
+
 /** Persistent metadata identifying the latest checkpoint for an EMS save slot. */
 USTRUCT(BlueprintType)
 struct EMSADDONSAUTOSAVE_API FEMSCheckpointRecord
@@ -24,7 +52,7 @@ struct EMSADDONSAUTOSAVE_API FEMSCheckpointRecord
 	UPROPERTY(SaveGame, VisibleAnywhere, BlueprintReadOnly, Category = "EMS Addons|Autosave and Checkpoints|Record")
 	FGuid CheckpointId;
 
-	/** Optional designer-facing name copied from the checkpoint actor. */
+	/** Optional save-menu display name copied from the checkpoint actor. */
 	UPROPERTY(SaveGame, VisibleAnywhere, BlueprintReadOnly, Category = "EMS Addons|Autosave and Checkpoints|Record")
 	FText DisplayName;
 

@@ -12,6 +12,7 @@
 #include "EMSObject.h"
 #include "EMSObjectAdv.h"
 #include "EMSPaths.h"
+#include "EMSSaveSlotMetadata.h"
 #include "Engine/GameInstance.h"
 #include "Engine/World.h"
 #include "Kismet/GameplayStatics.h"
@@ -23,9 +24,9 @@
 Save slots are ordinary EMS slots of one profile:
 
   <Profile>                          autosave with Autosave Slot Count 0 (1.1 behavior)
-  <Profile>_Autosave_<0..N-1>        rotating autosaves, oldest replaced first
-  <Profile>_Manual_<Name>            Manual Save
-  <Profile>_Checkpoint[_<Name>]      checkpoint saves, named on the checkpoint actor
+  <profile>_autosave_<0..N-1>        rotating autosaves, oldest replaced first
+  <profile>_manual_<name>            Manual Save
+  <profile>_checkpoint[_<name>]      checkpoint saves, named on the checkpoint actor
 
 A save switches the current EMS slot to its target and runs a normal EMS save there.
 EMS keeps its multi-level memory across any switch, so the new slot receives the complete
@@ -83,24 +84,48 @@ namespace
 		const UEMSInfoSaveGame* Info = EMS->GetSlotInfoObject(SlotName);
 		return Info ? Info->SlotInfo.TimeStamp : FDateTime::MinValue();
 	}
+
+	FString ResolveExistingSlot(const TArray<FString>& Slots, const FString& SlotName)
+	{
+		if (Slots.Contains(SlotName))
+		{
+			return SlotName;
+		}
+		for (const FString& Slot : Slots)
+		{
+			if (Slot.Equals(SlotName, ESearchCase::IgnoreCase))
+			{
+				return Slot;
+			}
+		}
+		return SlotName;
+	}
 }
 
 FString UEMSAutosaveSubsystem::MakeAutosaveSlotName(const FString& Profile, const int32 Index)
 {
-	return FSavePaths::ValidateSaveName(FString::Printf(TEXT("%s_Autosave_%d"), *Profile, Index));
+	return FSavePaths::ValidateSaveName(FString::Printf(TEXT("%s_autosave_%d"), *Profile, Index)).ToLower();
 }
 
 FString UEMSAutosaveSubsystem::MakeManualSlotName(const FString& Profile, const FString& SaveName)
 {
-	return FSavePaths::ValidateSaveName(Profile + TEXT("_Manual_") + SaveName);
+	return FSavePaths::ValidateSaveName(Profile + TEXT("_manual_") + SaveName).ToLower();
 }
 
 FString UEMSAutosaveSubsystem::MakeCheckpointSlotName(const FString& Profile, const FString& CheckpointSlotName)
 {
 	const FString Name = CheckpointSlotName.TrimStartAndEnd();
 	return FSavePaths::ValidateSaveName(Name.IsEmpty()
-		? Profile + TEXT("_Checkpoint")
-		: Profile + TEXT("_Checkpoint_") + Name);
+		? Profile + TEXT("_checkpoint")
+		: Profile + TEXT("_checkpoint_") + Name).ToLower();
+}
+
+FString UEMSAutosaveSubsystem::ResolveSaveSlotTarget(const FString& SlotName) const
+{
+	// Preserve existing spelling on case-sensitive save systems. New IDs are
+	// lowercase, but saves made by earlier versions must keep their paths.
+	const UEMSObject* EMS = UEMSObject::Get(this);
+	return EMS ? ResolveExistingSlot(EMS->GetSortedSaveSlots(), SlotName) : SlotName;
 }
 
 FString UEMSAutosaveSubsystem::GetSlotProfile(const FString& SlotName)
@@ -162,6 +187,131 @@ TArray<FString> UEMSAutosaveSubsystem::GetSaveSlots()
 	return Result;
 }
 
+TArray<FEMSSaveSlotDetails> UEMSAutosaveSubsystem::GetSaveSlotsWithDetails()
+{
+	TArray<FEMSSaveSlotDetails> Result;
+	for (const FString& Slot : GetSaveSlots())
+	{
+		FEMSSaveSlotDetails Details;
+		if (GetSaveSlotDetails(Slot, Details))
+		{
+			Result.Add(MoveTemp(Details));
+		}
+	}
+	return Result;
+}
+
+bool UEMSAutosaveSubsystem::GetSaveSlotDetails(const FString& SlotName, FEMSSaveSlotDetails& Details)
+{
+	Details = FEMSSaveSlotDetails();
+	UEMSObject* EMS = UEMSObject::Get(this);
+	const FString Slot = FSavePaths::ValidateSaveName(SlotName);
+	if (!EMS || SlotName.TrimStartAndEnd().IsEmpty() || Slot.IsEmpty() || !EMS->DoesSaveSlotExist(Slot))
+	{
+		return false;
+	}
+
+	Details.SlotName = Slot;
+	Details.TimeStamp = GetSlotTime(EMS, Slot);
+	const FString Suffix = Slot.Mid(GetSlotProfile(Slot).Len());
+	const FString ManualMarker = StoredPart(TEXT("_Manual_"));
+	const FString CheckpointMarker = StoredPart(TEXT("_Checkpoint"));
+	const FString AutosaveMarker = StoredPart(TEXT("_Autosave_"));
+	if (Suffix.StartsWith(ManualMarker))
+	{
+		Details.SaveType = EEMSSaveSlotType::Manual;
+		Details.DisplayName = FText::FromString(Suffix.Mid(ManualMarker.Len()));
+	}
+	else if (Suffix.StartsWith(CheckpointMarker))
+	{
+		Details.SaveType = EEMSSaveSlotType::Checkpoint;
+		const FString NamedMarker = CheckpointMarker + StoredPart(TEXT("_"));
+		Details.DisplayName = Suffix.StartsWith(NamedMarker)
+			? FText::FromString(Suffix.Mid(NamedMarker.Len()))
+			: NSLOCTEXT("EMSAutosave", "CheckpointName", "Checkpoint");
+	}
+	else
+	{
+		Details.DisplayName = Suffix.StartsWith(AutosaveMarker)
+			? FText::Format(NSLOCTEXT("EMSAutosave", "AutosaveNumber", "Autosave {0}"),
+				FText::AsNumber(FCString::Atoi(*Suffix.Mid(AutosaveMarker.Len())) + 1))
+			: NSLOCTEXT("EMSAutosave", "AutosaveName", "Autosave");
+	}
+
+	const FString& File = GetDefault<UEMSSaveSlotMetadata>()->SaveGameName;
+	if (EMS->DoesCustomSaveExist(Slot, File))
+	{
+		if (const UEMSSaveSlotMetadata* Metadata = Cast<UEMSSaveSlotMetadata>(
+			EMS->GetCustomSave(UEMSSaveSlotMetadata::StaticClass(), Slot, FString())))
+		{
+			Details.SaveType = Metadata->SaveType;
+			if (!Metadata->DisplayName.IsEmptyOrWhitespace())
+			{
+				Details.DisplayName = Metadata->DisplayName;
+			}
+		}
+	}
+	else
+	{
+		// An older checkpoint already has a label. Only use a record naming this slot;
+		// later autosaves carry that record but are not themselves the checkpoint.
+		const FEMSCheckpointRecord Record = GetCheckpointForSlot(Slot);
+		if (Record.IsValid() && Record.SaveSlot.Equals(Slot, ESearchCase::IgnoreCase))
+		{
+			Details.SaveType = EEMSSaveSlotType::Checkpoint;
+			if (!Record.DisplayName.IsEmptyOrWhitespace())
+			{
+				Details.DisplayName = Record.DisplayName;
+			}
+		}
+	}
+	return true;
+}
+
+bool UEMSAutosaveSubsystem::WriteSaveSlotMetadata(
+	const FString& SlotName, const FText& DisplayName, const EEMSSaveSlotType SaveType)
+{
+	UEMSObject* EMS = UEMSObject::Get(this);
+	UEMSSaveSlotMetadata* Metadata = EMS ? Cast<UEMSSaveSlotMetadata>(
+		EMS->GetCustomSave(UEMSSaveSlotMetadata::StaticClass(), SlotName, FString())) : nullptr;
+	UEMSInfoSaveGame* Info = EMS ? EMS->GetSlotInfoObject(SlotName) : nullptr;
+	if (!Metadata || !Info)
+	{
+		return false;
+	}
+	const FText PreviousName = Metadata->DisplayName;
+	const EEMSSaveSlotType PreviousType = Metadata->SaveType;
+	Metadata->DisplayName = DisplayName.IsEmptyOrWhitespace() ? FText() : DisplayName;
+	Metadata->SaveType = SaveType;
+	// SaveCustom normally stamps Slot Info too. A label edit must not move an old
+	// save to the front of the menu or change which autosave rotation replaces.
+	// Hold EMS's redundant-write throttle for this metadata-only operation.
+	TGuardValue<double> SlotInfoThrottle(Info->LastSaveAttemptTime, DBL_MAX);
+	if (!EMS->SaveCustom(Metadata))
+	{
+		Metadata->DisplayName = PreviousName;
+		Metadata->SaveType = PreviousType;
+		LogMessage(TEXT("The save slot's display metadata could not be written."), true);
+		return false;
+	}
+	return true;
+}
+
+bool UEMSAutosaveSubsystem::SetSaveSlotDisplayName(const FString& SlotName, FText DisplayName)
+{
+	UEMSObject* EMS = UEMSObject::Get(this);
+	FEMSSaveSlotDetails Details;
+	if (bIsShuttingDown || bSaveActive || ActiveSaveTask
+		|| IsCheckpointLoadInProgress() || IsSaveLoadInProgress()
+		|| !EMS || EMS->IsAsyncTaskActive(false)
+		|| !GetWorld() || !EMSAddons::HasPersistenceAuthority(GetWorld()->GetNetMode())
+		|| !GetSaveSlotDetails(SlotName, Details))
+	{
+		return false;
+	}
+	return WriteSaveSlotMetadata(Details.SlotName, DisplayName, Details.SaveType);
+}
+
 void UEMSAutosaveSubsystem::AddCarriedCustomFile(const FString& FileName)
 {
 	const FString Trimmed = FileName.TrimStartAndEnd();
@@ -179,16 +329,18 @@ void UEMSAutosaveSubsystem::RemoveCarriedCustomFile(const FString& FileName)
 TArray<FString> UEMSAutosaveSubsystem::GetCarriedCustomFiles(const bool bIncludeCheckpointRecord) const
 {
 	const FString& RecordFile = GetDefault<UEMSCheckpointSaveGame>()->SaveGameName;
+	const FString& MetadataFile = GetDefault<UEMSSaveSlotMetadata>()->SaveGameName;
 	TArray<FString> Files;
 	if (bIncludeCheckpointRecord)
 	{
 		Files.Add(RecordFile);
 	}
 	// The checkpoint record is handled above only, whatever the project lists.
-	const auto AddListed = [&Files, &RecordFile](const FString& File)
+	const auto AddListed = [&Files, &RecordFile, &MetadataFile](const FString& File)
 	{
 		const FString Trimmed = File.TrimStartAndEnd();
-		if (!Trimmed.IsEmpty() && !Trimmed.Equals(RecordFile, ESearchCase::IgnoreCase))
+		if (!Trimmed.IsEmpty() && !Trimmed.Equals(RecordFile, ESearchCase::IgnoreCase)
+			&& !Trimmed.Equals(MetadataFile, ESearchCase::IgnoreCase))
 		{
 			Files.AddUnique(Trimmed);
 		}
@@ -218,17 +370,20 @@ FString UEMSAutosaveSubsystem::ResolveAutosaveTarget(const FString& Profile)
 	const int32 Count = GetConfiguredAutosaveSlotCount();
 	if (Count <= 0)
 	{
-		return FSavePaths::ValidateSaveName(Profile);
+		// The profile comes from the current slot, which is lowercase after any
+		// generated save. Keep writing the caller's original profile slot.
+		return ResolveSaveSlotTarget(FSavePaths::ValidateSaveName(Profile));
 	}
 
 	// The current slot is the progress being continued. With more than one autosave
 	// slot it is never the one replaced, so a failed save can always switch back to it.
 	const FString CurrentSlot = EMS->GetCurrentSaveGameName();
+	const TArray<FString> ExistingSlots = EMS->GetSortedSaveSlots();
 	FString Oldest;
 	FDateTime OldestTime = FDateTime::MaxValue();
 	for (int32 Index = 0; Index < Count; ++Index)
 	{
-		const FString Name = MakeAutosaveSlotName(Profile, Index);
+		const FString Name = ResolveExistingSlot(ExistingSlots, MakeAutosaveSlotName(Profile, Index));
 		if (Count > 1 && Name.Equals(CurrentSlot, ESearchCase::IgnoreCase))
 		{
 			continue;
@@ -443,7 +598,7 @@ bool UEMSAutosaveSubsystem::CarryCustomFiles(const FString& SourceSlot, const FS
 		|| EMSAdv->CopySaveSlot(ValidTarget, ValidSource, ECopySaveSlotType::CustomFiles, Present, true);
 }
 
-bool UEMSAutosaveSubsystem::ManualSave(const FString& SaveName)
+bool UEMSAutosaveSubsystem::ManualSave(const FString& SaveName, FText DisplayName)
 {
 	static const FName ManualSaveReason(TEXT("Manual"));
 
@@ -468,7 +623,9 @@ bool UEMSAutosaveSubsystem::ManualSave(const FString& SaveName)
 		return false;
 	}
 
-	StartSave(ManualSaveReason, Profile, MakeManualSlotName(Profile, SaveName.TrimStartAndEnd()), nullptr, nullptr);
+	StartSave(ManualSaveReason, Profile, ResolveSaveSlotTarget(MakeManualSlotName(Profile, SaveName.TrimStartAndEnd())), nullptr, nullptr,
+		DisplayName.IsEmptyOrWhitespace() ? FText::FromString(SaveName.TrimStartAndEnd()) : DisplayName,
+		EEMSSaveSlotType::Manual);
 	return bSaveActive;
 }
 
