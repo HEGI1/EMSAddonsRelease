@@ -30,6 +30,19 @@ namespace
 	const FName PausedManualSaveReason(TEXT("Manual"));
 }
 
+bool UEMSAutosaveSubsystem::IsGameLoadActive(const ESaveGameMode Mode)
+{
+	for (TObjectIterator<UEMSAsyncLoadGame> It; It; ++It)
+	{
+		if (IsValid(*It) && It->IsActive()
+			&& (It->Mode == Mode || It->Mode == ESaveGameMode::MODE_All || Mode == ESaveGameMode::MODE_All))
+		{
+			return true;
+		}
+	}
+	return false;
+}
+
 bool UEMSAutosaveSubsystem::IsStreamingStuckByPause() const
 {
 	const UWorld* World = GetWorld();

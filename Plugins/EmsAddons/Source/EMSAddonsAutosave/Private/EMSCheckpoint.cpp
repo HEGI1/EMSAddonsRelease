@@ -192,7 +192,7 @@ void AEMSCheckpoint::ResetCheckpoint()
 	UGameInstance* GameInstance = GetGameInstance();
 	UEMSAutosaveSubsystem* Autosave = GameInstance ? GameInstance->GetSubsystem<UEMSAutosaveSubsystem>() : nullptr;
 	const bool bAddonCheckpointLoad = Autosave && Autosave->IsCheckpointLoadInProgress();
-	const bool bPlayerLoadActive = FAsyncSaveHelpers::IsAsyncLoadTaskActive(ESaveGameMode::MODE_Player, false);
+	const bool bPlayerLoadActive = UEMSAutosaveSubsystem::IsGameLoadActive(ESaveGameMode::MODE_Player);
 	if (bAddonCheckpointLoad || bPlayerLoadActive)
 	{
 		DisableTriggerForCheckpointLoad();
@@ -421,7 +421,7 @@ void AEMSCheckpoint::ResolveArmWatch()
 void AEMSCheckpoint::RefreshTriggerCollisionFromSaveData(UEMSAutosaveSubsystem* Autosave)
 {
 	const bool bAddonCheckpointLoad = Autosave && Autosave->IsCheckpointLoadInProgress();
-	const bool bPlayerLoadActive = FAsyncSaveHelpers::IsAsyncLoadTaskActive(ESaveGameMode::MODE_Player, false);
+	const bool bPlayerLoadActive = UEMSAutosaveSubsystem::IsGameLoadActive(ESaveGameMode::MODE_Player);
 	if (bAddonCheckpointLoad || bPlayerLoadActive)
 	{
 		DisableTriggerForCheckpointLoad();
@@ -479,7 +479,7 @@ void AEMSCheckpoint::ResolveLoadWatch()
 		return;
 	}
 
-	if (FAsyncSaveHelpers::IsAsyncLoadTaskActive(ESaveGameMode::MODE_Player, false))
+	if (UEMSAutosaveSubsystem::IsGameLoadActive(ESaveGameMode::MODE_Player))
 	{
 		ScheduleLoadWatch();
 		return;
@@ -519,7 +519,7 @@ void AEMSCheckpoint::ResolveCheckpointMetadataWatch()
 	UGameInstance* GameInstance = GetGameInstance();
 	UEMSAutosaveSubsystem* Autosave = GameInstance ? GameInstance->GetSubsystem<UEMSAutosaveSubsystem>() : nullptr;
 	const bool bAddonCheckpointLoad = Autosave && Autosave->IsCheckpointLoadInProgress();
-	const bool bPlayerLoadActive = FAsyncSaveHelpers::IsAsyncLoadTaskActive(ESaveGameMode::MODE_Player, false);
+	const bool bPlayerLoadActive = UEMSAutosaveSubsystem::IsGameLoadActive(ESaveGameMode::MODE_Player);
 	if (bAddonCheckpointLoad || bPlayerLoadActive)
 	{
 		ScheduleCheckpointMetadataWatch();
@@ -598,7 +598,7 @@ void AEMSCheckpoint::HandleEMSPlayerLoaded(const APlayerController* LoadedPlayer
 	// For a combined player+level task, EMS may still be active after the player
 	// phase. Otherwise RestoreTriggerCollision still defers BeginOverlap arming one
 	// additional tick, consuming any load-generated overlap state.
-	if (FAsyncSaveHelpers::IsAsyncLoadTaskActive(ESaveGameMode::MODE_Player, false))
+	if (UEMSAutosaveSubsystem::IsGameLoadActive(ESaveGameMode::MODE_Player))
 	{
 		ScheduleLoadWatch();
 		return;
@@ -670,7 +670,7 @@ void AEMSCheckpoint::HandleTriggerBeginOverlap(
 	UGameInstance* GameInstance = GetGameInstance();
 	UEMSAutosaveSubsystem* Autosave = GameInstance ? GameInstance->GetSubsystem<UEMSAutosaveSubsystem>() : nullptr;
 	const bool bAddonCheckpointLoad = Autosave && Autosave->IsCheckpointLoadInProgress();
-	const bool bPlayerLoadActive = FAsyncSaveHelpers::IsAsyncLoadTaskActive(ESaveGameMode::MODE_Player, false);
+	const bool bPlayerLoadActive = UEMSAutosaveSubsystem::IsGameLoadActive(ESaveGameMode::MODE_Player);
 	if (bAddonCheckpointLoad || bPlayerLoadActive)
 	{
 		// A load-generated overlap is restoration, not gameplay entering a checkpoint.

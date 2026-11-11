@@ -26,6 +26,8 @@ All saves of one game share a **profile**, the current EMS slot name without the
 
 Generated slot IDs are lowercase, so manual save names and **Checkpoint Slot Name** values that differ only in case share a slot. With **Autosave Slot Count** 0 the profile slot keeps its spelling, and existing mixed-case saves keep their paths and are still reused. After a save to a generated slot, **Get Save Profile** returns the lowercase profile (for example `game1`), so compare profiles ignoring case.
 
+EMS removes characters a file name cannot hold, such as `?`, `*` or `:`. **Manual Save** returns false for a **Save Name** with nothing left, such as `??`; a **Checkpoint Slot Name** like that uses the default checkpoint slot.
+
 Do not end profile names with the reserved suffixes `_autosave_<0-9>`, `_manual_<name>`, `_checkpoint` or `_checkpoint_<name>`, in any case.
 
 ## Menu and loading maps
@@ -111,6 +113,7 @@ Leaving the map clears all blockers, including ones added from the Game Instance
 
 ### Streaming and EMS versions
 
+- A World Partition cell or sub-level streaming in only delays a save. **Request Autosave** and checkpoint activation are accepted during it and save once it has finished. A game load (**Load Game Actors**) refuses them and cancels pending requests.
 - With EMS 1.86, an addon save removes its target's old Level file before switching slots, so World Partition and level streaming keep restoring from memory. If the removal fails, the save is refused. The target cannot be loaded until the save finishes. A save without Level in **Save Data Flags** leaves the slot without Level data until a later Level save.
 - EMS 1.85 clears streaming memory when switching slots. The addon logs a warning.
 - When a save fails under streaming, the previous slot becomes current again and World Partition reloads streamed cells from it. The addon logs a warning.

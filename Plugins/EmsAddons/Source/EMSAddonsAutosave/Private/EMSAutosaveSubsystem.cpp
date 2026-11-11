@@ -117,6 +117,8 @@ void UEMSAutosaveSubsystem::Deinitialize()
 	AddonSaveSlotAwaitingActorsSaved.Reset();
 	bCheckpointLoadAfterTravel = false;
 	bIgnoreNextSuccessfulActorsSaved = false;
+	bNextActorsSavedIsFailedAddonSave = false;
+	SlotBeforeSameMapCheckpointLoad.Reset();
 	ResetSaveLoadState();
 	Super::Deinitialize();
 }
@@ -129,7 +131,8 @@ bool UEMSAutosaveSubsystem::RequestAutosave(FName Reason, FText DisplayName)
 		|| bIsShuttingDown
 		|| IsCheckpointLoadInProgress()
 		|| IsSaveLoadInProgress()
-		|| FAsyncSaveHelpers::IsAsyncLoadTaskActive(ESaveGameMode::MODE_All, false))
+		// A streaming load only delays the save; see CanStartSave.
+		|| IsGameLoadActive())
 	{
 		return false;
 	}
@@ -158,7 +161,8 @@ bool UEMSAutosaveSubsystem::ActivateCheckpoint(AEMSCheckpoint* Checkpoint)
 	if (bIsShuttingDown
 		|| IsCheckpointLoadInProgress()
 		|| IsSaveLoadInProgress()
-		|| FAsyncSaveHelpers::IsAsyncLoadTaskActive(ESaveGameMode::MODE_All, false)
+		// A streaming load only delays the checkpoint's save; see CanStartSave.
+		|| IsGameLoadActive()
 		|| !IsValid(Checkpoint)
 		|| Checkpoint->IsActivationPending()
 		|| !EMSAddons::HasPersistenceAuthority(Checkpoint)
@@ -392,9 +396,10 @@ void UEMSAutosaveSubsystem::TryStartPendingSave()
 
 	// A load changes the state a pending request was meant to capture. Never carry
 	// an addon autosave across an EMS load and then save immediately after restore.
+	// A streaming load restores one streamed level, not the progress: the request waits for it below.
 	if (IsCheckpointLoadInProgress()
 		|| IsSaveLoadInProgress()
-		|| FAsyncSaveHelpers::IsAsyncLoadTaskActive(ESaveGameMode::MODE_All, false))
+		|| IsGameLoadActive())
 	{
 		CancelPendingRequest(TEXT("Pending autosave canceled because an EMS load started."), false);
 		return;
@@ -577,6 +582,7 @@ void UEMSAutosaveSubsystem::StartSave(
 
 	bSaveActive = true;
 	bSaveTargetInFlight = true;
+	bNextActorsSavedIsFailedAddonSave = false;
 	ActiveReason = Reason;
 	ActiveDisplayName = CheckpointRecord ? CheckpointRecord->DisplayName : DisplayName;
 	ActiveSaveType = CheckpointRecord ? EEMSSaveSlotType::Checkpoint : SaveType;
@@ -849,6 +855,7 @@ void UEMSAutosaveSubsystem::HandleSaveCompleted()
 	if (!EMS || !EMS->GetCurrentSaveUserName().Equals(ActiveSaveUser, ESearchCase::IgnoreCase)
 		|| !EMS->GetCurrentSaveGameName().Equals(CompletedSlot, ESearchCase::IgnoreCase))
 	{
+		bNextActorsSavedIsFailedAddonSave = true;
 		ResetActiveSaveState();
 		if (CompletedActor.IsValid())
 		{
@@ -864,6 +871,8 @@ void UEMSAutosaveSubsystem::HandleSaveCompleted()
 	// A metadata failure must not expose an overwritten save with its old label.
 	if (!HasWrittenActiveSlotInfo() || !WriteSaveSlotMetadata(CompletedSlot, CompletedDisplayName, CompletedSaveType))
 	{
+		// When EMS refuses the switch back, the journal kept here must survive EMS's success broadcast.
+		bNextActorsSavedIsFailedAddonSave = true;
 		ResetActiveSaveState(ReturnAndDiscardFailedSave(PreviousSlot, CompletedSlot));
 		if (CompletedActor.IsValid())
 		{
@@ -895,6 +904,7 @@ void UEMSAutosaveSubsystem::HandleSaveCompleted()
 	else
 	{
 		// Only a complete save stays current.
+		bNextActorsSavedIsFailedAddonSave = true;
 		ResetActiveSaveState(ReturnAndDiscardFailedSave(PreviousSlot, CompletedSlot));
 		if (CompletedActor.IsValid())
 		{
@@ -1274,6 +1284,8 @@ void UEMSAutosaveSubsystem::BeginCheckpointLoad()
 		FailCheckpointLoad(TEXT("The last checkpoint could not be loaded because EMS could not start a load operation."));
 		return;
 	}
+	// The same holds when EMS reports the load as failed; see HandleLoadFailed.
+	SlotBeforeSameMapCheckpointLoad = bArrivedByTravel ? FString() : SlotBeforeLoad;
 	ActiveLoadTask->OnCompleted.AddUniqueDynamic(this, &UEMSAutosaveSubsystem::HandleLoadCompleted);
 	ActiveLoadTask->OnFailed.AddUniqueDynamic(this, &UEMSAutosaveSubsystem::HandleLoadFailed);
 	ActiveLoadTask->Activate();
@@ -1282,6 +1294,7 @@ void UEMSAutosaveSubsystem::BeginCheckpointLoad()
 void UEMSAutosaveSubsystem::HandleLoadCompleted()
 {
 	ActiveLoadTask = nullptr;
+	SlotBeforeSameMapCheckpointLoad.Reset();
 	if (!SaveBeingLoaded.IsEmpty())
 	{
 		CompleteSaveLoad();
@@ -1310,6 +1323,13 @@ void UEMSAutosaveSubsystem::HandleLoadFailed()
 	{
 		FailSaveLoad(TEXT("EMS failed to load the save."));
 		return;
+	}
+	// On the current map the old progress is still running, so its slot becomes current again.
+	// Otherwise later saves would carry the checkpoint slot's custom files into that progress.
+	if (!SlotBeforeSameMapCheckpointLoad.IsEmpty())
+	{
+		SlotBeforeTravelLoad = SlotBeforeSameMapCheckpointLoad;
+		ReturnFromFailedTravel(CheckpointLoadSlot);
 	}
 	FailCheckpointLoad(TEXT("EMS failed to load the last checkpoint."));
 }
@@ -1340,7 +1360,10 @@ void UEMSAutosaveSubsystem::HandleEMSActorsSaved(ESaveGameMode Mode, bool bSucce
 		: (UEMSObject::Get(this) ? UEMSObject::Get(this)->GetCurrentSaveGameName() : FString());
 	AddonSaveSlotAwaitingActorsSaved.Reset();
 
-	if (!bSuccess)
+	// EMS wrote the actor data, but the addon could not complete that save and already reported it failed.
+	const bool bFailedAddonSave = bNextActorsSavedIsFailedAddonSave;
+	bNextActorsSavedIsFailedAddonSave = false;
+	if (!bSuccess || bFailedAddonSave)
 	{
 		bIgnoreNextSuccessfulActorsSaved = false;
 		TryStartPendingSave();
@@ -1425,6 +1448,7 @@ void UEMSAutosaveSubsystem::FailCheckpointLoad(const FString& Message)
 	CheckpointLoadSlot.Reset();
 	bCheckpointLoadAfterTravel = false;
 	SlotBeforeTravelLoad.Reset();
+	SlotBeforeSameMapCheckpointLoad.Reset();
 	LogMessage(Message, true);
 	if (FailedCheckpoint.IsValid())
 	{
@@ -1480,6 +1504,8 @@ void UEMSAutosaveSubsystem::HandleWorldCleanup(
 	AutosaveBlockers.Empty();
 	AddonSaveSlotAwaitingActorsSaved.Reset();
 	bIgnoreNextSuccessfulActorsSaved = false;
+	bNextActorsSavedIsFailedAddonSave = false;
+	SlotBeforeSameMapCheckpointLoad.Reset();
 
 	// A completed load may still be waiting for its checkpoint cell to appear.
 	// Leaving this world ends that placement request. During checkpoint travel

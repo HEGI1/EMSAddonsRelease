@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.2.8 - 2026-11-12
+
+### Fixed
+
+- **Autosave and Checkpoints:** a World Partition cell or sub-level streaming in is no longer treated like a game load. During those frames a checkpoint entered by the player was ignored until they left and re-entered it, **Request Autosave** (including the periodic trigger) returned false, and a request waiting for the minimum interval or a blocker was canceled without an event. The save now waits for the streaming load and then runs. A real EMS game load still refuses and cancels as before.
+- **Autosave and Checkpoints:** **Manual Save** refuses a **Save Name** of which EMS stores no character, such as `??`. Its slot was `<profile>_manual_`, which is outside the profile: once current, **Get Save Slots** listed only that slot, and with **Autosave Slot Count** 0 later autosaves kept writing into it. A **Checkpoint Slot Name** like that now selects the default checkpoint slot.
+- **Autosave rotation:** with **Autosave Slot Count** 3 or more, a slot known to be incomplete is replaced before any complete save. A canceled or cut-off save could leave it with the newest time, so two complete saves were overwritten first.
+- **Load Last Checkpoint:** when EMS fails to load a checkpoint on the current map, the slot of the progress still running becomes current again, as it already did when the load could not start. Previously the checkpoint slot stayed current and later saves carried its custom files.
+- **Failed saves:** when the addon cannot complete a save that EMS reported as successful and EMS also refuses the switch back, the recovery journal now survives EMS's own success event, so the next start returns to the last complete save. That event also no longer counts as a successful save for the minimum interval.
+
 ## 1.2.7 - 2026-11-11
 
 ### Added

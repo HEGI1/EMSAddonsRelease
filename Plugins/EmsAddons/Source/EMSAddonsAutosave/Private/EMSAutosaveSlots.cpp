@@ -86,6 +86,15 @@ namespace
 		return Info ? Info->SlotInfo.TimeStamp : FDateTime::MinValue();
 	}
 
+	/**
+	 * False when EMS stores nothing of Name, such as "??": it removes characters a file name cannot hold.
+	 * A slot ID ending in its marker is not recognized as that profile's save (see Get Slot Profile).
+	 */
+	bool HasStoredNamePart(const FString& Name)
+	{
+		return FSavePaths::ValidateSaveName(FString(TEXT("A")) + Name.TrimStartAndEnd()).Len() > 1;
+	}
+
 	FString ResolveExistingSlot(const TArray<FString>& Slots, const FString& SlotName)
 	{
 		if (Slots.Contains(SlotName))
@@ -115,8 +124,9 @@ FString UEMSAutosaveSubsystem::MakeManualSlotName(const FString& Profile, const 
 
 FString UEMSAutosaveSubsystem::MakeCheckpointSlotName(const FString& Profile, const FString& CheckpointSlotName)
 {
+	// A name EMS stores nothing of selects the default checkpoint slot, like an empty one.
 	const FString Name = CheckpointSlotName.TrimStartAndEnd();
-	return FSavePaths::ValidateSaveName(Name.IsEmpty()
+	return FSavePaths::ValidateSaveName(!HasStoredNamePart(Name)
 		? Profile + TEXT("_checkpoint")
 		: Profile + TEXT("_checkpoint_") + Name).ToLower();
 }
@@ -381,6 +391,7 @@ FString UEMSAutosaveSubsystem::ResolveAutosaveTarget(const FString& Profile)
 	const FString CurrentSlot = EMS->GetCurrentSaveGameName();
 	const TArray<FString> ExistingSlots = EMS->GetSortedSaveSlots();
 	FString Oldest;
+	FString Incomplete;
 	FDateTime OldestTime = FDateTime::MaxValue();
 	for (int32 Index = 0; Index < Count; ++Index)
 	{
@@ -393,6 +404,16 @@ FString UEMSAutosaveSubsystem::ResolveAutosaveTarget(const FString& Profile)
 		{
 			return Name;
 		}
+		// A slot known to be incomplete holds no save to lose, whatever its time says: a save that
+		// was cut off or canceled may have stamped it last. Replace it before any complete save.
+		if (IsSlotUnavailable(Name))
+		{
+			if (Incomplete.IsEmpty())
+			{
+				Incomplete = Name;
+			}
+			continue;
+		}
 
 		// Ties keep the lower index, so equal timestamps still rotate predictably.
 		const FDateTime Time = GetSlotTime(EMS, Name);
@@ -402,7 +423,7 @@ FString UEMSAutosaveSubsystem::ResolveAutosaveTarget(const FString& Profile)
 			OldestTime = Time;
 		}
 	}
-	return Oldest;
+	return Incomplete.IsEmpty() ? Oldest : Incomplete;
 }
 
 bool UEMSAutosaveSubsystem::SwitchToSaveSlot(const FString& TargetSlot, const EEMSSlotSwitch Switch, bool* bOutRemovedLevelData)
@@ -736,6 +757,12 @@ bool UEMSAutosaveSubsystem::ManualSave(const FString& SaveName, FText DisplayNam
 	UWorld* World = GetWorld();
 	UEMSObject* EMS = UEMSObject::Get(this);
 	const FString Profile = GetSaveProfile();
+	if (!SaveName.TrimStartAndEnd().IsEmpty() && !HasStoredNamePart(SaveName))
+	{
+		// "<profile>_manual_" would be a slot outside the profile, which then becomes the current one.
+		LogMessage(FString::Printf(TEXT("Manual Save refused: EMS cannot store any character of the save name \"%s\"."), *SaveName), true);
+		return false;
+	}
 	if (SaveName.TrimStartAndEnd().IsEmpty()
 		|| Profile.IsEmpty()
 		|| bIsShuttingDown

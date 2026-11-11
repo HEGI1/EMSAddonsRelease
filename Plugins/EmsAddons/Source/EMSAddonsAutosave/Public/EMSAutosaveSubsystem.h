@@ -263,6 +263,14 @@ public:
 	/** Aborts a synchronous save reservation before any EMS files are written. */
 	void AbortSynchronousAutosave();
 
+	/**
+	 * True while an EMS Load Game Actors task that restores Mode's data is running.
+	 * EMS's own load check also counts streaming loads (a World Partition cell or sub-level streaming in),
+	 * which restore only that level's placed actors. They delay a save; they never replace the progress
+	 * a request or a checkpoint entry belongs to.
+	 */
+	static bool IsGameLoadActive(ESaveGameMode Mode = ESaveGameMode::MODE_All);
+
 	/** C++ helper used by checkpoint actors while checkpoint state is being restored. */
 	bool IsCheckpointLoadInProgress() const
 	{
@@ -380,6 +388,12 @@ private:
 	bool bCheckpointLoadAfterTravel = false;
 	bool bIsShuttingDown = false;
 	bool bIgnoreNextSuccessfulActorsSaved = false;
+	/**
+	 * EMS reported the active save as successful, but the addon could not complete it (slot info,
+	 * label or checkpoint record). EMS broadcasts On Actors Saved with success right after; for the
+	 * addon that save failed, so it must not end the recovery journal or count as a save.
+	 */
+	bool bNextActorsSavedIsFailedAddonSave = false;
 	bool bWarnedSessionClearingSwitch = false;
 
 	/**
@@ -422,6 +436,9 @@ private:
 
 	/** The current slot before Load Save or Load Last Checkpoint switched away from it. Failed travel returns to it. */
 	FString SlotBeforeTravelLoad;
+
+	/** The same for a checkpoint load running on the current map, whose world keeps the old progress if EMS fails. */
+	FString SlotBeforeSameMapCheckpointLoad;
 
 	/** Save journal, stored with the EMS current slot. Set while an addon save may have written TargetSlot. */
 	UPROPERTY(config)

@@ -72,6 +72,7 @@ bool UEMSAutosaveSubsystem::BeginSynchronousAutosave(
 	// a listener, but TryStartPendingSave then sees bSaveActive and only queues it.
 	bSaveActive = true;
 	bSaveTargetInFlight = true;
+	bNextActorsSavedIsFailedAddonSave = false;
 	ActiveReason = Reason;
 	ActiveDisplayName = AutosaveDisplayName;
 	ActiveSaveType = EEMSSaveSlotType::Autosave;
