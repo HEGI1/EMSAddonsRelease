@@ -65,3 +65,4 @@ Not supported: ISM/HISM components on runtime-spawned actors, Actor Foliage, Lan
 | Tag | Where | Meaning |
 | --- | --- | --- |
 | `EMS.IgnoreInstances` | Actor or component tag | Excludes that actor's or component's instances from saving. |
+| `EMSGeneratedReplacement` | Component tag, added by the addon | Marks components that **Replace Instance** created. Do not add or remove it. |

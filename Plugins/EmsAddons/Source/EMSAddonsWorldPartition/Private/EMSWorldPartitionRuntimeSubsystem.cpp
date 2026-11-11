@@ -1094,6 +1094,16 @@ void UEMSWorldPartitionRuntimeSubsystem::HandleManagerPreSave(AEMSWorldPartition
 	ApplyDeferredChanges();
 }
 
+void UEMSWorldPartitionRuntimeSubsystem::FinalizeManagerCapture(AEMSWorldPartitionRuntimeManager* Manager)
+{
+	if (!CanOperate() || Manager != PrimaryManager.Get()) return;
+	for (const FGuid& Id : DeferredDestroyedIds)
+	{
+		Manager->RuntimeActorRecords.RemoveAll([&Id](const FEMSWorldPartitionRuntimeActorRecord& Record) { return Record.LocalId == Id; });
+	}
+	DeferredDestroyedIds.Reset();
+}
+
 void UEMSWorldPartitionRuntimeSubsystem::HandleManagerPreLoad(AEMSWorldPartitionRuntimeManager* Manager)
 {
 	RefreshPrimaryManager(false);

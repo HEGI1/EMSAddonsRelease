@@ -302,7 +302,7 @@ bool UEMSAutosaveSubsystem::SetSaveSlotDisplayName(const FString& SlotName, FTex
 {
 	UEMSObject* EMS = UEMSObject::Get(this);
 	FEMSSaveSlotDetails Details;
-	if (bIsShuttingDown || bSaveActive || ActiveSaveTask
+	if (bIsShuttingDown || bSaveActive || ActiveSaveTask || PausedOperation != EEMSPausedOperation::None
 		|| IsCheckpointLoadInProgress() || IsSaveLoadInProgress()
 		|| !EMS || EMS->IsAsyncTaskActive(false)
 		|| !GetWorld() || !EMSAddons::HasPersistenceAuthority(GetWorld()->GetNetMode())
@@ -527,6 +527,12 @@ bool UEMSAutosaveSubsystem::ReturnAndDiscardFailedSave(const FString& PreviousSl
 	{
 		return true;
 	}
+	// Failure callbacks can run before the active state is reset; they must already see the exclusion.
+	// A stale start that a callback replaced with other work must not end that work's own target.
+	if (FailedSlot.Equals(ActiveSaveSlot, ESearchCase::IgnoreCase))
+	{
+		bSaveTargetInFlight = false;
+	}
 	SetSlotUnavailable(FailedSlot, true);
 	if (!ReturnToPreviousSlot(PreviousSlot, FailedSlot))
 	{
@@ -593,8 +599,23 @@ bool UEMSAutosaveSubsystem::DoesSaveSlotRemain(const FString& SlotName) const
 bool UEMSAutosaveSubsystem::IsSlotUnavailable(const FString& SlotName) const
 {
 	const UEMSObject* EMS = UEMSObject::Get(this);
-	const TSet<FString>* Slots = EMS ? UnavailableSlots.Find(EMS->GetCurrentSaveUserName().ToLower()) : nullptr;
-	return Slots && Slots->Contains(FSavePaths::ValidateSaveName(SlotName).ToLower());
+	const FString Slot = FSavePaths::ValidateSaveName(SlotName);
+	// The exclusion is persisted before a save prepares its target, to cover that save ending
+	// badly. While the save still runs, its target is the current progress: hiding it would
+	// drop the only slot of a single-slot profile from menus and report no current checkpoint
+	// for the length of every save. Each way a save ends without completing leaves the
+	// exclusion in place, and it applies again as soon as the save has failed or ended.
+	if (EMS && bSaveTargetInFlight && !ActiveSaveSlot.IsEmpty()
+		&& Slot.Equals(FSavePaths::ValidateSaveName(ActiveSaveSlot), ESearchCase::IgnoreCase)
+		&& EMS->GetCurrentSaveUserName().Equals(ActiveSaveUser, ESearchCase::IgnoreCase))
+	{
+		return false;
+	}
+	return EMS && UnavailableSlots.ContainsByPredicate([&](const FEMSUnavailableSaveSlot& Entry)
+	{
+		return Entry.User.Equals(EMS->GetCurrentSaveUserName(), ESearchCase::IgnoreCase)
+			&& Entry.Slot.Equals(Slot, ESearchCase::IgnoreCase);
+	});
 }
 
 void UEMSAutosaveSubsystem::SetSlotUnavailable(const FString& SlotName, const bool bUnavailable)
@@ -604,16 +625,24 @@ void UEMSAutosaveSubsystem::SetSlotUnavailable(const FString& SlotName, const bo
 	{
 		return;
 	}
-	TSet<FString>& Slots = UnavailableSlots.FindOrAdd(EMS->GetCurrentSaveUserName().ToLower());
 	const FString Slot = FSavePaths::ValidateSaveName(SlotName).ToLower();
+	const FString User = EMS->GetCurrentSaveUserName().ToLower();
+	const auto Matches = [&](const FEMSUnavailableSaveSlot& Entry)
+	{
+		return Entry.User.Equals(User, ESearchCase::IgnoreCase) && Entry.Slot.Equals(Slot, ESearchCase::IgnoreCase);
+	};
 	if (bUnavailable)
 	{
-		Slots.Add(Slot);
+		if (UnavailableSlots.ContainsByPredicate(Matches)) return;
+		FEMSUnavailableSaveSlot& Entry = UnavailableSlots.AddDefaulted_GetRef();
+		Entry.User = User;
+		Entry.Slot = Slot;
 	}
 	else
 	{
-		Slots.Remove(Slot);
+		if (UnavailableSlots.RemoveAll(Matches) == 0) return;
 	}
+	SaveConfig();
 }
 
 bool UEMSAutosaveSubsystem::PreflightCarriedCustomFiles(const FString& SourceSlot, const FString& TargetSlot,
@@ -714,15 +743,21 @@ bool UEMSAutosaveSubsystem::ManualSave(const FString& SaveName, FText DisplayNam
 		|| ActiveSaveTask
 		|| IsCheckpointLoadInProgress()
 		|| IsSaveLoadInProgress()
+		|| PausedOperation != EEMSPausedOperation::None
 		|| !World
 		|| !World->IsGameWorld()
 		|| World->bIsTearingDown
 		|| !EMSAddons::HasPersistenceAuthority(World->GetNetMode())
 		|| !EMS
-		|| EMS->IsAsyncTaskActive(false)
-		|| IsLevelStreamingBlockingSave())
+		|| IsLevelStreamingBlockingSave()
+		|| IsSavingExcludedOn(World, TEXT("Manual Save")))
 	{
 		return false;
+	}
+	if (EMS->IsAsyncTaskActive(false))
+	{
+		// A pause that stopped EMS streaming mid-task: accepted, and saved once that work has finished.
+		return WaitForStreamingStuckByPause(EEMSPausedOperation::ManualSave, SaveName, DisplayName);
 	}
 
 	StartSave(ManualSaveReason, Profile, ResolveSaveSlotTarget(MakeManualSlotName(Profile, SaveName.TrimStartAndEnd())), nullptr, nullptr,
@@ -741,12 +776,12 @@ bool UEMSAutosaveSubsystem::LoadSave(const FString& SlotName)
 		|| ActiveLoadTask
 		|| IsCheckpointLoadInProgress()
 		|| IsSaveLoadInProgress()
+		|| PausedOperation != EEMSPausedOperation::None
 		|| !World
 		|| !World->IsGameWorld()
 		|| World->bIsTearingDown
 		|| !EMSAddons::HasPersistenceAuthority(World->GetNetMode())
-		|| !EMS
-		|| FAsyncSaveHelpers::IsAsyncTaskActive(ESaveGameMode::MODE_All, false))
+		|| !EMS)
 	{
 		return false;
 	}
@@ -764,6 +799,11 @@ bool UEMSAutosaveSubsystem::LoadSave(const FString& SlotName)
 	{
 		LogMessage(FString::Printf(TEXT("Load Save refused %s: its slot info names no level."), *Slot), true);
 		return false;
+	}
+	if (FAsyncSaveHelpers::IsAsyncTaskActive(ESaveGameMode::MODE_All, false))
+	{
+		// A pause that stopped EMS streaming mid-task: accepted, and loaded once that work has finished.
+		return WaitForStreamingStuckByPause(EEMSPausedOperation::LoadSave, SlotName);
 	}
 
 	// A request queued before the load describes progress that is about to be replaced.
@@ -879,6 +919,7 @@ void UEMSAutosaveSubsystem::CompleteSaveLoad()
 	if (!EMS || !EMS->GetCurrentSaveGameName().Equals(LoadedSlot, ESearchCase::IgnoreCase))
 	{
 		LogMessage(TEXT("Save loading completed after the current EMS slot changed."), true);
+		bPausedOperationFailureReported |= bRunningPausedOperation;
 		OnSaveLoadFailed.Broadcast(LoadedSlot);
 		return;
 	}
@@ -896,6 +937,7 @@ void UEMSAutosaveSubsystem::FailSaveLoad(const FString& Message)
 	RefreshCheckpointActorsFromSaveData();
 	if (!FailedSlot.IsEmpty())
 	{
+		bPausedOperationFailureReported |= bRunningPausedOperation;
 		OnSaveLoadFailed.Broadcast(FailedSlot);
 	}
 }

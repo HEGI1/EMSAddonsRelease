@@ -19,7 +19,8 @@ enum class ELevelStreamingState : uint8;
  * collision is gone, gravity is not. By the time the cell streams back in the
  * actor is far below the world, and a save taken meanwhile records it there.
  *
- * The guard reacts to the two streaming edges instead of polling. It suspends
+ * The guard reacts to the two streaming edges. While held, it also checks for
+ * movement onto loaded support every 0.1 seconds. It suspends
  * only when the level that is actually holding the owner up is about to become
  * invisible, or when support is missing below the owner at Begin Play while the
  * world there is still streaming in (World Partition streaming or a conventional
@@ -121,6 +122,8 @@ private:
 	FDelegateHandle BeginInvisibleHandle;
 	FDelegateHandle StateChangedHandle;
 	FTimerHandle InitialEvaluationTimer;
+	FTimerHandle SuspendedEvaluationTimer;
+	void EvaluateSuspendedSupport();
 	bool bSuspended = false;
 	uint64 StreamingHoldGeneration = 0;
 

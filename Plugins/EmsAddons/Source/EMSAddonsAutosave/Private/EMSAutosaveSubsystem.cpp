@@ -37,6 +37,7 @@ void UEMSAutosaveSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 {
 	Super::Initialize(Collection);
 	Collection.InitializeDependency<UEMSObject>();
+	LoadConfig();
 	bIsShuttingDown = false;
 	FCoreUObjectDelegates::PostLoadMapWithWorld.AddUObject(this, &UEMSAutosaveSubsystem::HandlePostLoadMap);
 	FWorldDelegates::OnWorldCleanup.AddUObject(this, &UEMSAutosaveSubsystem::HandleWorldCleanup);
@@ -70,6 +71,7 @@ void UEMSAutosaveSubsystem::Initialize(FSubsystemCollectionBase& Collection)
 void UEMSAutosaveSubsystem::Deinitialize()
 {
 	bIsShuttingDown = true;
+	CancelPausedOperation(TEXT("The save or load requested while paused was canceled because the game is shutting down."));
 	FCoreUObjectDelegates::PostLoadMapWithWorld.RemoveAll(this);
 	FWorldDelegates::OnWorldCleanup.RemoveAll(this);
 	if (GEngine)
@@ -138,7 +140,8 @@ bool UEMSAutosaveSubsystem::RequestAutosave(FName Reason, FText DisplayName)
 		|| !World->IsGameWorld()
 		|| World->bIsTearingDown
 		|| !EMSAddons::HasPersistenceAuthority(World->GetNetMode())
-		|| !EMS)
+		|| !EMS
+		|| IsSavingExcludedOn(World, TEXT("Request Autosave")))
 	{
 		return false;
 	}
@@ -161,6 +164,10 @@ bool UEMSAutosaveSubsystem::ActivateCheckpoint(AEMSCheckpoint* Checkpoint)
 		|| !EMSAddons::HasPersistenceAuthority(Checkpoint)
 		|| Checkpoint->GetWorld() != GetWorld()
 		|| !Checkpoint->CheckpointId.IsValid())
+	{
+		return false;
+	}
+	if (IsSavingExcludedOn(GetWorld(), TEXT("Checkpoint activation")))
 	{
 		return false;
 	}
@@ -283,6 +290,7 @@ bool UEMSAutosaveSubsystem::EnqueueRequest(
 	// A nested request may supersede this one, but nothing overwrites it afterward.
 	if (!CanceledReason.IsNone())
 	{
+		bPausedOperationFailureReported |= bRunningPausedOperation;
 		OnAutosaveFailed.Broadcast(CanceledReason);
 	}
 	return true;
@@ -300,6 +308,21 @@ bool UEMSAutosaveSubsystem::IsLevelStreamingBlockingSave() const
 	const bool bWorldPartitionBlocked = EMS->AutoSaveLoadWorldPartition() && !EMS->WorldPartitionLoadComplete() && !UEMSObject::SkipInitialWorldPartitionLoad();
 	const bool bStreamingBlocked = !EMS->AutoSaveLoadWorldPartition() && EMS->IsLevelStreaming();
 	return bWorldPartitionBlocked || bStreamingBlocked;
+}
+
+bool UEMSAutosaveSubsystem::IsSavingExcludedOn(const UWorld* World, const TCHAR* Operation) const
+{
+	const UEMSAutosaveSettings* Settings = GetDefault<UEMSAutosaveSettings>();
+	if (!Settings || !Settings->IsMapExcluded(World))
+	{
+		return false;
+	}
+	if (Operation)
+	{
+		LogMessage(FString::Printf(TEXT("%s refused: %s is one of the Excluded Maps, where the addon never saves."),
+			Operation, *World->GetMapName()));
+	}
+	return true;
 }
 
 bool UEMSAutosaveSubsystem::CanStartSave(
@@ -384,6 +407,13 @@ void UEMSAutosaveSubsystem::TryStartPendingSave()
 		return;
 	}
 
+	// A Manual Save requested while paused is waiting for EMS streaming; it goes first.
+	if (PausedOperation != EEMSPausedOperation::None)
+	{
+		ScheduleRetry(0.1f);
+		return;
+	}
+
 	float RetryDelay = -1.0f;
 	if (!CanStartSave(PendingRequest.GetSaveSlot(), RetryDelay))
 	{
@@ -436,13 +466,15 @@ void UEMSAutosaveSubsystem::StartSave(
 		{
 			LogMessage(Message, true);
 		}
+		bPausedOperationFailureReported |= bRunningPausedOperation;
 		OnAutosaveFailed.Broadcast(Reason);
 	};
 
 	if (!Settings
 		|| !EMS
 		|| TargetSlot.IsEmpty()
-		|| !GetSaveProfile().Equals(Profile, ESearchCase::IgnoreCase))
+		|| !GetSaveProfile().Equals(Profile, ESearchCase::IgnoreCase)
+		|| IsSavingExcludedOn(GetWorld(), TEXT("The save")))
 	{
 		FailBeforeStart(nullptr);
 		return;
@@ -460,6 +492,12 @@ void UEMSAutosaveSubsystem::StartSave(
 		return;
 	}
 
+	// Preparation can replace custom files even if EMS never starts writing actor data.
+	// Persist the exclusion before the first mutation, independently of the current-slot
+	// recovery journal. Cancellation, copy failure, user changes and restart must all keep
+	// a mixed snapshot out of addon menus and loads until a complete replacement succeeds.
+	SetSlotUnavailable(TargetSlot, true);
+
 	// The target may hold a checkpoint's save (an earlier save of this checkpoint slot, or
 	// a 1.1 checkpoint in the profile slot). Retire that record before anything is written,
 	// so an interrupted overwrite can never be loaded as that checkpoint. A checkpoint save
@@ -471,7 +509,6 @@ void UEMSAutosaveSubsystem::StartSave(
 	}
 	if (!CarryCustomFiles(PreviousSlot, TargetSlot, CheckpointRecord == nullptr))
 	{
-		SetSlotUnavailable(TargetSlot, true);
 		FailBeforeStart(TEXT("The save was not started because its carried custom files could not be copied into the target slot."));
 		return;
 	}
@@ -506,6 +543,7 @@ void UEMSAutosaveSubsystem::StartSave(
 		if (Reason == ManualSaveReason)
 		{
 			// Manual saves are never queued; the caller hears about it now.
+			bPausedOperationFailureReported |= bRunningPausedOperation;
 			OnAutosaveFailed.Broadcast(Reason);
 			return;
 		}
@@ -521,6 +559,7 @@ void UEMSAutosaveSubsystem::StartSave(
 			{
 				CheckpointActor->MarkActivationFailed();
 			}
+			bPausedOperationFailureReported |= bRunningPausedOperation;
 			OnAutosaveFailed.Broadcast(Reason);
 			return;
 		}
@@ -537,6 +576,7 @@ void UEMSAutosaveSubsystem::StartSave(
 	};
 
 	bSaveActive = true;
+	bSaveTargetInFlight = true;
 	ActiveReason = Reason;
 	ActiveDisplayName = CheckpointRecord ? CheckpointRecord->DisplayName : DisplayName;
 	ActiveSaveType = CheckpointRecord ? EEMSSaveSlotType::Checkpoint : SaveType;
@@ -559,11 +599,11 @@ void UEMSAutosaveSubsystem::StartSave(
 	if (!bSaveActive || ActiveSaveTask != SaveTask)
 	{
 		// World cleanup owns the slot in that case; a callback that started other work leaves it to that work.
-		// Nothing was written. A target left without its Level data is no save any more, unless it is
+		// Custom files may already have changed; the persisted exclusion still protects this target.
+		// A target left without its Level data is no save any more, unless it is
 		// current again (a later save writes it). EMS refuses the delete while other work runs.
 		if (bRemovedTargetLevelData)
 		{
-			UnavailableSlots.FindOrAdd(SaveUser.ToLower()).Add(FSavePaths::ValidateSaveName(SaveSlot).ToLower());
 			if (UEMSObject* CurrentEMS = UEMSObject::Get(this);
 				CurrentEMS && CurrentEMS->GetCurrentSaveUserName().Equals(SaveUser, ESearchCase::IgnoreCase)
 				&& !CurrentEMS->GetCurrentSaveGameName().Equals(SaveSlot, ESearchCase::IgnoreCase))
@@ -591,10 +631,6 @@ void UEMSAutosaveSubsystem::StartSave(
 		|| (IsAutosaveBlocked() && Reason != ManualSaveReason))
 	{
 		const TWeakObjectPtr<AEMSCheckpoint> AbortedActor = ActiveCheckpointActor;
-		if (bRemovedTargetLevelData && EMS && !EMS->GetCurrentSaveUserName().Equals(SaveUser, ESearchCase::IgnoreCase))
-		{
-			UnavailableSlots.FindOrAdd(SaveUser.ToLower()).Add(FSavePaths::ValidateSaveName(SaveSlot).ToLower());
-		}
 		// EMS refuses the switch back while a callback's EMS task runs. Then the journal
 		// stays, so the next start returns to the previous slot.
 		const bool bReturned = ReturnFromAbandonedSave(PreviousSlot, SaveSlot, bRemovedTargetLevelData);
@@ -605,6 +641,7 @@ void UEMSAutosaveSubsystem::StartSave(
 			AbortedActor->MarkActivationFailed();
 		}
 		LogMessage(TEXT("Autosave was canceled because its start callback invalidated the save slot, world, authority, blocker, or EMS task state."), true);
+		bPausedOperationFailureReported |= bRunningPausedOperation;
 		OnAutosaveFailed.Broadcast(Reason);
 		return;
 	}
@@ -615,6 +652,7 @@ void UEMSAutosaveSubsystem::StartSave(
 void UEMSAutosaveSubsystem::ResetActiveSaveState(const bool bClearJournal)
 {
 	bSaveActive = false;
+	bSaveTargetInFlight = false;
 	ActiveSaveTask = nullptr;
 	ActiveReason = NAME_None;
 	ActiveDisplayName = FText();
@@ -716,6 +754,11 @@ bool UEMSAutosaveSubsystem::RecoverInterruptedSave()
 		ClearSaveJournal();
 		return false;
 	}
+	// Recovery declares this target incomplete, also for a reservation this instance still holds.
+	if (Slot.Equals(ActiveSaveSlot, ESearchCase::IgnoreCase))
+	{
+		bSaveTargetInFlight = false;
+	}
 	SetSlotUnavailable(Slot, true);
 	if (Previous.IsEmpty() || !EMS->DoesSaveSlotExist(Previous) || IsSlotUnavailable(Previous))
 	{
@@ -738,7 +781,7 @@ bool UEMSAutosaveSubsystem::RecoverInterruptedSave()
 	SetSlotUnavailable(Slot, !bDeleted);
 	ClearSaveJournal();
 	LogMessage(FString::Printf(TEXT("The game ended while saving %s. Continuing from %s; the incomplete save %s."),
-		*Slot, *Previous, bDeleted ? TEXT("was deleted") : TEXT("could not be deleted and is unavailable for this session")), true);
+		*Slot, *Previous, bDeleted ? TEXT("was deleted") : TEXT("could not be deleted and remains unavailable across restarts")), true);
 	return true;
 }
 
@@ -764,6 +807,7 @@ void UEMSAutosaveSubsystem::CancelPendingRequest(const FString& Message, const b
 	LogMessage(Message, true);
 	if (bBroadcastFailure && !CanceledReason.IsNone())
 	{
+		bPausedOperationFailureReported |= bRunningPausedOperation;
 		OnAutosaveFailed.Broadcast(CanceledReason);
 	}
 }
@@ -811,6 +855,7 @@ void UEMSAutosaveSubsystem::HandleSaveCompleted()
 			CompletedActor->MarkActivationFailed();
 		}
 		LogMessage(TEXT("Autosave completed after the current EMS save slot changed; its metadata was not written."), true);
+		bPausedOperationFailureReported |= bRunningPausedOperation;
 		OnAutosaveFailed.Broadcast(CompletedReason);
 		return;
 	}
@@ -824,6 +869,7 @@ void UEMSAutosaveSubsystem::HandleSaveCompleted()
 		{
 			CompletedActor->MarkActivationFailed();
 		}
+		bPausedOperationFailureReported |= bRunningPausedOperation;
 		OnAutosaveFailed.Broadcast(CompletedReason);
 		return;
 	}
@@ -854,6 +900,7 @@ void UEMSAutosaveSubsystem::HandleSaveCompleted()
 		{
 			CompletedActor->MarkActivationFailed();
 		}
+		bPausedOperationFailureReported |= bRunningPausedOperation;
 		OnAutosaveFailed.Broadcast(CompletedReason);
 	}
 }
@@ -872,6 +919,7 @@ void UEMSAutosaveSubsystem::HandleSaveFailed()
 	{
 		FailedActor->MarkActivationFailed();
 	}
+	bPausedOperationFailureReported |= bRunningPausedOperation;
 	OnAutosaveFailed.Broadcast(FailedReason);
 }
 
@@ -1023,7 +1071,7 @@ FEMSCheckpointRecord UEMSAutosaveSubsystem::GetCurrentCheckpoint()
 	// Only while the checkpoint slot still holds this checkpoint. A later checkpoint
 	// sharing the slot, or an overwrite that cleared it, ends it for this progress.
 	const FEMSCheckpointRecord Stored = GetCheckpointForSlot(Current.SaveSlot);
-	return Stored.IsValid() && Stored.HasSameIdentity(Current) ? Current : FEMSCheckpointRecord();
+	return Stored.IsValid() && Stored.HasSameActivation(Current) ? Current : FEMSCheckpointRecord();
 }
 
 void UEMSAutosaveSubsystem::PrepareCheckpointActorForLoad()
@@ -1103,10 +1151,10 @@ bool UEMSAutosaveSubsystem::LoadLastCheckpoint()
 	if (bIsShuttingDown
 		|| bSaveActive
 		|| IsSaveLoadInProgress()
+		|| PausedOperation != EEMSPausedOperation::None
 		|| !World
 		|| !EMSAddons::HasPersistenceAuthority(World->GetNetMode())
-		|| ActiveLoadTask
-		|| FAsyncSaveHelpers::IsAsyncTaskActive(ESaveGameMode::MODE_All, false))
+		|| ActiveLoadTask)
 	{
 		return false;
 	}
@@ -1132,7 +1180,7 @@ bool UEMSAutosaveSubsystem::LoadLastCheckpoint()
 	const FEMSCheckpointRecord Stored = EMS->DoesSaveSlotExist(CheckpointSlot)
 		? GetCheckpointForSlot(CheckpointSlot)
 		: FEMSCheckpointRecord();
-	if (!Stored.IsValid() || !Stored.HasSameIdentity(Current))
+	if (!Stored.IsValid() || !Stored.HasSameActivation(Current))
 	{
 		LogMessage(FString::Printf(TEXT("Load Last Checkpoint refused: slot %s no longer holds this checkpoint."), *CheckpointSlot), true);
 		return false;
@@ -1141,6 +1189,12 @@ bool UEMSAutosaveSubsystem::LoadLastCheckpoint()
 	// EMS does not start a load while the game is paused. On the current map nothing travels
 	// (which would end the pause), so refuse before the slot or session data change.
 	const bool bSameWorld = EMSCheckpoint::IsSameWorld(World, Stored.World);
+	if (FAsyncSaveHelpers::IsAsyncTaskActive(ESaveGameMode::MODE_All, false))
+	{
+		// A pause that stopped EMS streaming mid-task: a travelling load is accepted and starts once
+		// that work has finished. On the current map a paused load is refused below in any case.
+		return !bSameWorld && WaitForStreamingStuckByPause(EEMSPausedOperation::LoadLastCheckpoint, FString(), FText(), Stored);
+	}
 	if (bSameWorld && World->IsPaused())
 	{
 		LogMessage(TEXT("Load Last Checkpoint refused: EMS cannot load while the game is paused. Unpause the game first."), true);
@@ -1374,6 +1428,7 @@ void UEMSAutosaveSubsystem::FailCheckpointLoad(const FString& Message)
 	LogMessage(Message, true);
 	if (FailedCheckpoint.IsValid())
 	{
+		bPausedOperationFailureReported |= bRunningPausedOperation;
 		OnCheckpointLoadFailed.Broadcast(FailedCheckpoint);
 	}
 }
@@ -1421,6 +1476,7 @@ void UEMSAutosaveSubsystem::HandleWorldCleanup(
 	}
 
 	World->GetTimerManager().ClearAllTimersForObject(this);
+	CancelPausedOperation(TEXT("The save or load requested while paused was canceled because its world was cleaned up."));
 	AutosaveBlockers.Empty();
 	AddonSaveSlotAwaitingActorsSaved.Reset();
 	bIgnoreNextSuccessfulActorsSaved = false;
@@ -1452,6 +1508,7 @@ void UEMSAutosaveSubsystem::HandleWorldCleanup(
 		}
 		if (!InterruptedReason.IsNone())
 		{
+			bPausedOperationFailureReported |= bRunningPausedOperation;
 			OnAutosaveFailed.Broadcast(InterruptedReason);
 		}
 		LogMessage(TEXT("Autosave state was cleared because its world was cleaned up before the EMS task completed."), true);
@@ -1468,6 +1525,7 @@ void UEMSAutosaveSubsystem::HandleWorldCleanup(
 		const FEMSCheckpointRecord InterruptedCheckpoint = CheckpointBeingLoaded;
 		CheckpointBeingLoaded = FEMSCheckpointRecord();
 		CheckpointLoadSlot.Reset();
+		bPausedOperationFailureReported |= bRunningPausedOperation;
 		OnCheckpointLoadFailed.Broadcast(InterruptedCheckpoint);
 		LogMessage(TEXT("Checkpoint loading was interrupted by world cleanup."), true);
 	}
@@ -1494,6 +1552,11 @@ void UEMSAutosaveSubsystem::ConfigureWorldTimers(UWorld* World)
 
 	World->GetTimerManager().ClearTimer(PeriodicTimer);
 	World->GetTimerManager().ClearTimer(MapLoadTimer);
+	// Menu and loading maps never save, so their automatic triggers are not armed at all.
+	if (Settings->IsMapExcluded(World))
+	{
+		return;
+	}
 	const float PeriodicInterval = ResolvePeriodicAutosaveInterval();
 	if (Settings->bEnableAutosave && PeriodicInterval > 0.0f)
 	{

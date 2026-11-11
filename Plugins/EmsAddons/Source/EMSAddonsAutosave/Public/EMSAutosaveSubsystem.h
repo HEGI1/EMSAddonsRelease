@@ -2,6 +2,7 @@
 #pragma once
 
 #include "CoreMinimal.h"
+#include "Containers/Ticker.h"
 #include "EMSAutosaveRequest.h"
 #include "EMSAutosaveTypes.h"
 #include "EMSTypes.h"
@@ -30,6 +31,15 @@ enum class EEMSSlotSwitch : uint8
 	Return,
 	/** Back to the previous slot while the world is going away. */
 	LeaveWorld,
+};
+
+/** A save or load requested while paused that waits for EMS streaming loads stuck by the pause. */
+enum class EEMSPausedOperation : uint8
+{
+	None,
+	ManualSave,
+	LoadSave,
+	LoadLastCheckpoint,
 };
 
 /**
@@ -96,7 +106,8 @@ public:
 	/**
 	 * Queues an autosave of the configured EMS data into the next autosave slot of the current profile.
 	 * Display Name overrides the current autosave display name for this request. Empty uses that current name.
-	 * The name is captured when requested, including while blocked. Returns false on clients or while EMS is loading.
+	 * The name is captured when requested, including while blocked. Returns false on clients, on Excluded Maps
+	 * or while EMS is loading.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "EMS Addons|Autosave and Checkpoints|Autosave", meta = (DisplayName = "Request Autosave"))
 	bool RequestAutosave(FName Reason = NAME_None, FText DisplayName = FText());
@@ -110,8 +121,11 @@ public:
 
 	/**
 	 * Saves the configured EMS data into lowercase "<profile>_manual_<savename>" now, replacing an earlier save of that name.
-	 * Enable Autosave, blockers and the minimum interval do not apply. Returns false when EMS or another addon
-	 * save is busy, or level streaming is not ready; the result is reported through the autosave events with Reason "Manual".
+	 * Enable Autosave, blockers and the minimum interval do not apply. Returns false on Excluded Maps, when EMS or
+	 * another addon save is busy, or level streaming is not ready; the result is reported through the autosave events
+	 * with Reason "Manual". When the game was paused while an EMS streaming load was running, the save is accepted:
+	 * the game runs until that work finishes (at most 2 seconds), pauses again and then saves.
+	 * Any active EMS save, including Level-only disk and memory-only streaming saves, remains a conflict.
 	 * Display Name is presentation only and defaults to SaveName. SaveName still determines which slot is replaced.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "EMS Addons|Autosave and Checkpoints|Saves", meta = (DisplayName = "Manual Save"))
@@ -121,6 +135,8 @@ public:
 	 * Loads any existing EMS slot, for example one from Get Save Slots.
 	 * Makes it the current EMS slot, opens its map (also when it is the current map, so the load starts
 	 * from a fresh world) and loads the configured data with EMS. Unsaved progress is discarded.
+	 * When the game was paused while an EMS streaming load was running, the load is accepted and starts once
+	 * that work has finished (the game runs for at most 2 seconds first).
 	 */
 	UFUNCTION(BlueprintCallable, Category = "EMS Addons|Autosave and Checkpoints|Saves", meta = (DisplayName = "Load Save"))
 	bool LoadSave(const FString& SlotName);
@@ -129,10 +145,13 @@ public:
 	UFUNCTION(BlueprintPure, Category = "EMS Addons|Autosave and Checkpoints|Saves", meta = (DisplayName = "Is Save Load In Progress"))
 	bool IsSaveLoadInProgress() const
 	{
-		return bSaveLoadAfterTravel || !SaveBeingLoaded.IsEmpty();
+		return bSaveLoadAfterTravel || !SaveBeingLoaded.IsEmpty() || PausedOperation == EEMSPausedOperation::LoadSave;
 	}
 
-	/** Returns the current profile's existing slots, newest first, excluding targets known to be incomplete this session. */
+	/**
+	 * Returns the current profile's existing slots, newest first, excluding targets known to be incomplete
+	 * (also after a restart). The slot a running addon save is writing stays listed until that save ends.
+	 */
 	UFUNCTION(BlueprintCallable, Category = "EMS Addons|Autosave and Checkpoints|Saves", meta = (DisplayName = "Get Save Slots"))
 	TArray<FString> GetSaveSlots();
 
@@ -195,6 +214,8 @@ public:
 	 * Makes its checkpoint slot the current EMS slot, travels to the checkpoint world when required and lets EMS
 	 * restore the saved player/level state. After EMS finishes, the local player is placed at the matching
 	 * checkpoint trigger center while keeping the EMS-restored rotation.
+	 * While paused, a checkpoint on the current map is refused (EMS does not load during pause). A load that
+	 * changes map waits for EMS streaming loads stopped by the pause, as Load Save does.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "EMS Addons|Autosave and Checkpoints|Checkpoint", meta = (DisplayName = "Load Last Checkpoint"))
 	bool LoadLastCheckpoint();
@@ -213,6 +234,7 @@ public:
 	/**
 	 * Adds a named condition that temporarily prevents addon autosaves from starting.
 	 * Multiple independent blockers can coexist; use the same name when removing a blocker.
+	 * Blockers belong to the current map and are cleared when it is left. For menu maps use Excluded Maps.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "EMS Addons|Autosave and Checkpoints|Autosave", meta = (DisplayName = "Add Autosave Blocker"))
 	void AddAutosaveBlocker(FName Blocker);
@@ -225,9 +247,9 @@ public:
 	UFUNCTION(BlueprintPure, Category = "EMS Addons|Autosave and Checkpoints|Autosave", meta = (DisplayName = "Is Autosave Blocked"))
 	bool IsAutosaveBlocked() const { return !AutosaveBlockers.IsEmpty(); }
 
-	/** Returns true while an addon-requested EMS save is currently running. */
+	/** Returns true while an addon-requested EMS save is running, including a paused Manual Save waiting for EMS streaming. */
 	UFUNCTION(BlueprintPure, Category = "EMS Addons|Autosave and Checkpoints|Autosave", meta = (DisplayName = "Is Autosave Active"))
-	bool IsAutosaveActive() const { return bSaveActive; }
+	bool IsAutosaveActive() const { return bSaveActive || PausedOperation == EEMSPausedOperation::ManualSave; }
 
 	/**
 	 * Internal C++ reservation used by the pre-load-map synchronous save path.
@@ -246,6 +268,7 @@ public:
 	{
 		// A Load Save task is an ordinary EMS load for checkpoint actors, not a checkpoint load.
 		return bCheckpointLoadAfterTravel
+			|| PausedOperation == EEMSPausedOperation::LoadLastCheckpoint
 			|| CheckpointBeingLoaded.IsValid()
 			|| (ActiveLoadTask != nullptr && SaveBeingLoaded.IsEmpty());
 	}
@@ -334,8 +357,9 @@ private:
 	FString ActiveSaveSlot;
 	FString ActiveSaveUser;
 	double ActiveSlotInfoWriteStartSeconds = DBL_MAX;
-	/** Incomplete targets from failed preparation or saving. Scoped to EMS user and this game instance. */
-	TMap<FString, TSet<FString>> UnavailableSlots;
+	/** Persisted before target preparation; only deletion or a complete addon save clears an entry. */
+	UPROPERTY(config)
+	TArray<FEMSUnavailableSaveSlot> UnavailableSlots;
 	/** The current slot before the active save switched away from it. A save that fails returns to it. */
 	FString ActivePreviousSlot;
 	FString CheckpointLoadSlot;
@@ -350,11 +374,43 @@ private:
 	float PeriodicIntervalOverride = -1.0f;
 	double LastSuccessfulSaveSeconds = -DBL_MAX;
 	bool bSaveActive = false;
+	/** The active save has started and has not failed or been abandoned; see IsSlotUnavailable. */
+	bool bSaveTargetInFlight = false;
 	bool bActiveRequestIsCheckpoint = false;
 	bool bCheckpointLoadAfterTravel = false;
 	bool bIsShuttingDown = false;
 	bool bIgnoreNextSuccessfulActorsSaved = false;
 	bool bWarnedSessionClearingSwitch = false;
+
+	/**
+	 * Paused-world handling. EMS streaming tasks advance on world timers, which stop while the game is paused,
+	 * so a pause that lands mid-stream leaves them active until unpause and EMS refuses every save and load.
+	 * Manual Save, Load Save and a travelling Load Last Checkpoint then unpause briefly, let that streaming work
+	 * finish, restore the pause and run. Only identifiable streaming loads are waited out, never a game
+	 * load or any save (EMS 1.85/1.86 do not publicly identify memory-only streaming saves).
+	 * The request stays bound to the EMS user and slot current when it was accepted; a change cancels it.
+	 */
+	EEMSPausedOperation PausedOperation = EEMSPausedOperation::None;
+	FString PausedOperationArgument;
+	FString PausedOperationUser;
+	FString PausedOperationSlot;
+	FText PausedOperationDisplayName;
+	FEMSCheckpointRecord PausedOperationCheckpoint;
+	double PausedOperationDeadline = 0.0;
+	FTSTicker::FDelegateHandle PausedOperationTicker;
+	bool bRunningPausedOperation = false;
+	bool bPausedOperationFailureReported = false;
+
+	/** True when the world is paused and every active EMS task is an identifiable streaming load stuck by pause. */
+	bool IsStreamingStuckByPause() const;
+	/** Accepts Operation to run once that streaming work has finished. False when it does not apply. */
+	bool WaitForStreamingStuckByPause(EEMSPausedOperation Operation, const FString& Argument = FString(),
+		const FText& DisplayName = FText(), const FEMSCheckpointRecord& Checkpoint = FEMSCheckpointRecord());
+	bool TickPausedOperation(float DeltaTime);
+	/** Restores the pause and runs the waiting operation, or reports it failed when bReady is false. */
+	void RunPausedOperation(bool bReady, const TCHAR* FailureMessage);
+	/** Ends a waiting operation without running it (world cleanup, shutdown). */
+	void CancelPausedOperation(const TCHAR* Message);
 
 	/** Slot that Load Save is loading, until its load finishes. */
 	FString SaveBeingLoaded;
@@ -379,7 +435,7 @@ private:
 
 	/** Records that an addon save is about to make TargetSlot current and write it. */
 	void BeginSaveJournal(const FString& TargetSlot, const FString& PreviousSlot);
-	/** The save ended (completed, failed or abandoned), so nothing on disk is left half written by it. */
+	/** Ends current-slot recovery after completion or return; persistent target exclusions are independent. */
 	void ClearSaveJournal();
 	/** Clears a journal left by a cut-off save once a successful EMS save of all addon data rewrote its slot. */
 	void ClearJournalCompletedBy(const FString& SavedSlot, ESaveGameMode Mode);
@@ -405,12 +461,15 @@ private:
 	bool WriteSaveSlotMetadata(const FString& SlotName, const FText& DisplayName, EEMSSaveSlotType SaveType);
 	bool HasWrittenActiveSlotInfo() const;
 	bool DoesSaveSlotRemain(const FString& SlotName) const;
+	/** True for a persisted exclusion of the current EMS user, except the target of the save still running. */
 	bool IsSlotUnavailable(const FString& SlotName) const;
 	void SetSlotUnavailable(const FString& SlotName, bool bUnavailable);
 	bool PreflightCarriedCustomFiles(const FString& SourceSlot, const FString& TargetSlot, bool bIncludeCheckpointRecord) const;
 	/** Resolves a generated ID to the original spelling of an existing slot, for pre-lowercase saves. */
 	FString ResolveSaveSlotTarget(const FString& SlotName) const;
 
+	/** True when World is in Excluded Maps. Logs Operation's refusal when it is not null. */
+	bool IsSavingExcludedOn(const UWorld* World, const TCHAR* Operation) const;
 	bool CanStartSave(const FString& RequestedProfile, float& OutRetryDelay) const;
 	bool IsLevelStreamingBlockingSave() const;
 	void TryStartPendingSave();
@@ -425,12 +484,13 @@ private:
 	bool ReturnToPreviousSlot(const FString& PreviousSlot, const FString& FailedSlot, EEMSSlotSwitch Switch = EEMSSlotSwitch::Return);
 	/**
 	 * Leaves a save that was abandoned before EMS wrote anything. A target whose Level data was removed
-	 * for the switch is no longer a loadable save and is deleted like a failed one; otherwise it stays.
+	 * for the switch is deleted like a failed one; otherwise it stays excluded, since preparation may
+	 * already have replaced custom files. Exclusions persist independently of the recovery journal.
 	 */
 	bool ReturnFromAbandonedSave(const FString& PreviousSlot, const FString& AbandonedSlot, bool bRemovedLevelData);
 	/**
 	 * ReturnToPreviousSlot for a save that EMS reported as failed after it may have
-	 * started writing, then deletes FailedSlot. If deletion fails, excludes it from addon lists and loads for this session.
+	 * started writing, then deletes FailedSlot. If deletion fails, persistently excludes it from addon lists and loads.
 	 * Only for a reported failure: a save whose result is unknown may be complete.
 	 * Same return value as ReturnToPreviousSlot.
 	 */

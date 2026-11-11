@@ -51,6 +51,8 @@ public:
 	void Reconcile();
 
 	void HandleManagerPreSave(AEMSWorldPartitionRuntimeManager* Manager);
+	/** Commit deaths raised by placed capture, without invoking gameplay. */
+	void FinalizeManagerCapture(AEMSWorldPartitionRuntimeManager* Manager);
 	void HandleManagerPreLoad(AEMSWorldPartitionRuntimeManager* Manager);
 	void HandleManagerLoaded(AEMSWorldPartitionRuntimeManager* Manager);
 	bool IsPrimaryManager(const AEMSWorldPartitionRuntimeManager* Manager) const;

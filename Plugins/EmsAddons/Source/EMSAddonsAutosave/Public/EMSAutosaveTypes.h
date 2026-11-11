@@ -4,6 +4,19 @@
 #include "CoreMinimal.h"
 #include "EMSAutosaveTypes.generated.h"
 
+/** A target that may contain an incomplete snapshot, scoped to its EMS user. */
+USTRUCT()
+struct FEMSUnavailableSaveSlot
+{
+	GENERATED_BODY()
+
+	UPROPERTY()
+	FString User;
+
+	UPROPERTY()
+	FString Slot;
+};
+
 UENUM(BlueprintType)
 enum class EEMSSaveSlotType : uint8
 {
@@ -83,5 +96,12 @@ struct EMSADDONSAUTOSAVE_API FEMSCheckpointRecord
 			&& !World.IsNull()
 			&& !Other.World.IsNull()
 			&& World.GetAssetPath() == Other.World.GetAssetPath();
+	}
+
+	/** The same saved snapshot, rather than a later activation of this actor. */
+	bool HasSameActivation(const FEMSCheckpointRecord& Other) const
+	{
+		return HasSameIdentity(Other) && ActivatedAt == Other.ActivatedAt
+			&& SaveSlot.Equals(Other.SaveSlot, ESearchCase::IgnoreCase);
 	}
 };

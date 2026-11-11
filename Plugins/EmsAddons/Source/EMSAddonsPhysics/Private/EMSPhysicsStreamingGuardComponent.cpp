@@ -472,6 +472,11 @@ void UEMSPhysicsStreamingGuardComponent::SuspendOwnerPhysics()
 	if (bSuspended)
 	{
 		++StreamingHoldGeneration;
+		if (UWorld* World = GetWorld())
+		{
+			World->GetTimerManager().SetTimer(SuspendedEvaluationTimer, this,
+				&UEMSPhysicsStreamingGuardComponent::EvaluateSuspendedSupport, 0.1f, true);
+		}
 		UE_LOG(
 			LogEMSAddonsPhysics,
 			Verbose,
@@ -483,6 +488,7 @@ void UEMSPhysicsStreamingGuardComponent::SuspendOwnerPhysics()
 
 void UEMSPhysicsStreamingGuardComponent::ResumeOwnerPhysics()
 {
+	if (UWorld* World = GetWorld()) World->GetTimerManager().ClearTimer(SuspendedEvaluationTimer);
 	if (bSuspended) ++StreamingHoldGeneration;
 	for (const FEMSSuspendedBody& Body : SuspendedBodies)
 	{
@@ -507,6 +513,11 @@ void UEMSPhysicsStreamingGuardComponent::ResumeOwnerPhysics()
 
 	SuspendedBodies.Reset();
 	bSuspended = false;
+}
+
+void UEMSPhysicsStreamingGuardComponent::EvaluateSuspendedSupport()
+{
+	if (bSuspended && (HasAnySupportBelow() || IsWorldBelowOwnerLoaded())) ResumeOwnerPhysics();
 }
 
 bool UEMSPhysicsStreamingGuardComponent::GetGravityBeforeStreamingHold(

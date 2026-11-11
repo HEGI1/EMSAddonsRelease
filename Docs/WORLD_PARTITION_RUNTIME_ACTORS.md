@@ -37,4 +37,4 @@ Use [Actor Spawner](ACTOR_SPAWNER.md) if a runtime actor must belong to a specif
 
 ## Settings
 
-Runtime actors have no addon settings. For NPCs, set **Auto Possess AI** on the Pawn class as described above.
+Runtime actors have no addon settings.

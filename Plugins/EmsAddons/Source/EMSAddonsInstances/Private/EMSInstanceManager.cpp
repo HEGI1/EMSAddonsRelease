@@ -1,4 +1,4 @@
-﻿//Easy Multi Save Addons - Copyright (C) 2026 by Michael Hegemann.
+//Easy Multi Save Addons - Copyright (C) 2026 by Michael Hegemann.
 #include "EMSInstanceManager.h"
 
 #include "Components/HierarchicalInstancedStaticMeshComponent.h"
@@ -344,7 +344,8 @@ AEMSInstanceManager::FindCompatibleReplacementSource(
 	SourceOwner->GetComponents(Components);
 	for (UInstancedStaticMeshComponent* Component : Components)
 	{
-		if (Component == SourceComponent
+		if (!Component || Component == SourceComponent
+			|| Component->ComponentHasTag(TEXT("EMSGeneratedReplacement"))
 			|| !IsSupportedSource(Component)
 			|| Component->GetStaticMesh() != ReplacementMesh
 			|| Component->GetClass() != ComponentClass
@@ -428,6 +429,7 @@ UInstancedStaticMeshComponent* AEMSInstanceManager::EnsureReplacementSource(
 			// component before returning it so the source manager can discover it
 			// on the next refresh instead of creating a duplicate UObject.
 			SourceOwner->AddOwnedComponent(Component);
+			Component->ComponentTags.AddUnique(TEXT("EMSGeneratedReplacement"));
 			return Component->GetStaticMesh() == ReplacementMesh
 				? Component
 				: nullptr;
@@ -440,6 +442,7 @@ UInstancedStaticMeshComponent* AEMSInstanceManager::EnsureReplacementSource(
 		if (Component && Component->GetFName() == Descriptor.GeneratedSourceName)
 		{
 			SourceOwner->AddOwnedComponent(Component);
+			Component->ComponentTags.AddUnique(TEXT("EMSGeneratedReplacement"));
 			return Component->GetStaticMesh() == ReplacementMesh
 				? Component
 				: nullptr;
@@ -464,6 +467,7 @@ UInstancedStaticMeshComponent* AEMSInstanceManager::EnsureReplacementSource(
 	}
 
 	ReplacementComponent->CreationMethod = EComponentCreationMethod::Instance;
+	ReplacementComponent->ComponentTags.AddUnique(TEXT("EMSGeneratedReplacement"));
 	ReplacementComponent->ClearInstances();
 	ReplacementComponent->SetStaticMesh(ReplacementMesh);
 	// Set explicitly rather than inherited, because the foliage case has no

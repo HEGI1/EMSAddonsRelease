@@ -6,6 +6,8 @@
 #include "EMSTypes.h"
 #include "EMSAutosaveSettings.generated.h"
 
+class UWorld;
+
 /** Project-wide configuration for the EMS Addons checkpoint and autosave helper. */
 UCLASS(Config = Game, DefaultConfig, meta = (DisplayName = "Autosave and Checkpoints"))
 class EMSADDONSAUTOSAVE_API UEMSAutosaveSettings : public UDeveloperSettings
@@ -28,6 +30,18 @@ public:
 	 */
 	UPROPERTY(Config, EditAnywhere, Category = "General", meta = (Bitmask, BitmaskEnum = "/Script/EasyMultiSave.ESaveTypeFlags"))
 	int32 SaveDataFlags = static_cast<int32>(ESaveTypeFlags::SF_Player) | static_cast<int32>(ESaveTypeFlags::SF_Level);
+
+	/**
+	 * Maps on which the addon never saves, such as the main menu, front-end and loading maps.
+	 * EMS keeps the last played slot current, so a save on such a map would write that map into the player's profile.
+	 * Request Autosave, the automatic triggers (Autosave When Leaving Map checks the map being left),
+	 * Manual Save and checkpoint activation are refused there. Load Save and Load Last Checkpoint still work.
+	 */
+	UPROPERTY(Config, EditAnywhere, Category = "General", meta = (AllowedClasses = "/Script/Engine.World"))
+	TArray<TSoftObjectPtr<UWorld>> ExcludedMaps;
+
+	/** True when World is one of the Excluded Maps. PIE worlds match their editor map. */
+	bool IsMapExcluded(const UWorld* World) const;
 
 	/**
 	 * Minimum number of seconds between successful addon autosaves.

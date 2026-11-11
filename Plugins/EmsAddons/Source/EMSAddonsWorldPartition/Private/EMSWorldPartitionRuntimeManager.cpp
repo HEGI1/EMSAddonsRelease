@@ -60,6 +60,10 @@ void AEMSWorldPartitionRuntimeManager::ActorPreSave_Implementation()
 			{
 				Placed->HandleManagerPreSave(Manager);
 			}
+			if (UEMSWorldPartitionRuntimeSubsystem* Subsystem = ResolveRuntimeSubsystem(Manager))
+			{
+				Subsystem->FinalizeManagerCapture(Manager);
+			}
 		});
 }
 

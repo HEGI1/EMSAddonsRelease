@@ -36,7 +36,7 @@ void UEMSAutosaveSubsystem::SetPeriodicAutosaveInterval(const float IntervalSeco
 
 	const UEMSAutosaveSettings* Settings = GetDefault<UEMSAutosaveSettings>();
 	World->GetTimerManager().ClearTimer(PeriodicTimer);
-	if (Settings && Settings->bEnableAutosave && PeriodicIntervalOverride > 0.0f)
+	if (Settings && Settings->bEnableAutosave && PeriodicIntervalOverride > 0.0f && !Settings->IsMapExcluded(World))
 	{
 		World->GetTimerManager().SetTimer(
 			PeriodicTimer,

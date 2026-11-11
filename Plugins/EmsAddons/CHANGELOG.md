@@ -1,5 +1,24 @@
 # Changelog
 
+## 1.2.7 - 2026-11-11
+
+### Added
+
+- **Autosave and Checkpoints:** **Excluded Maps** setting for the main menu, front-end and loading maps. The addon never saves on them: **Request Autosave**, **Manual Save** and checkpoint activation are refused, periodic and after-load autosaves are not armed, and **Autosave When Leaving Map** skips travel away from them. **Load Save** and **Load Last Checkpoint** still work there.
+
+### Fixed
+
+- **Autosave preparation:** persist user-scoped target exclusions before checkpoint/custom-file writes in async and synchronous map-leave saves. Canceled starts, partial carried-file copies and failed cleanup can no longer expose mixed snapshots through addon menus or loads after returning to the previous slot or restarting. Complete addon replacements restore availability.
+- **Running saves:** the target exclusion no longer applies while its save is still running. **Get Save Slots**, **Get Save Slot Details**, **Has Checkpoint** and **Get Current Checkpoint** keep reporting the slot being written and its carried checkpoint; previously every autosave briefly hid them, including the only slot with **Autosave Slot Count** 0. Failed, canceled and interrupted targets stay excluded as before.
+- **Pause menus:** ordinary Level-only disk saves are treated as conflicts and leave the game paused. Only identifiable streaming loads are waited out; EMS 1.85/1.86 keep the flags identifying memory-only streaming saves private, so those saves also require unpausing first.
+- **Persistence edge cases:** generated instance replacements remain reconstructible after loading older saves; checkpoint references reject overwritten activations; placed save callbacks commit runtime actor deaths before serialization; held physics objects resume after movement onto loaded ground; deferred pause-menu operations stay bound to their original EMS user and slot and report failure once.
+- **Autosave and Checkpoints:** automatic autosaves could save a main menu or loading map into the last played profile, because EMS keeps that slot current. With **Autosave Slot Count** 0 this replaced the player's progress, and **Load Save** or Continue then opened the menu. List such maps in **Excluded Maps**.
+- **Autosave and Checkpoints:** **Manual Save**, **Load Save** and a map-changing **Load Last Checkpoint** no longer fail from a pause menu when the pause stopped an EMS streaming load mid-task (World Partition or level streaming). The request is accepted; the game runs until that work finishes (at most 2 seconds), pauses again and the request runs.
+
+### Documentation
+
+- **Autosave and Checkpoints:** autosave blockers are cleared when the map changes, including blockers added from the Game Instance.
+
 ## 1.2.6 - 2026-11-10
 
 ### Documentation

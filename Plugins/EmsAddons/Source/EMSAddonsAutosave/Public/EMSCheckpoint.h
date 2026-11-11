@@ -72,6 +72,7 @@ public:
 	/**
 	 * Activates this checkpoint explicitly and saves the configured EMS data.
 	 * Returns true when the checkpoint system accepts the activation. Trigger Once and pending-state rules still apply.
+	 * Always false on Excluded Maps.
 	 */
 	UFUNCTION(BlueprintCallable, Category = "EMS Addons|Autosave and Checkpoints|Checkpoint", meta = (DisplayName = "Activate Checkpoint"))
 	bool ActivateCheckpoint();

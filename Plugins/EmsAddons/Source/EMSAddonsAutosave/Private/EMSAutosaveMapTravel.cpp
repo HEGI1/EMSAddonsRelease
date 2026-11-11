@@ -71,6 +71,13 @@ void EMSAutosaveMapTravel::HandlePreLoadMap(const FWorldContext& WorldContext, c
 		return;
 	}
 
+	// The map being left decides: leaving a menu map must never save the menu into the profile.
+	if (Settings->IsMapExcluded(World))
+	{
+		LogSkip(MapName, TEXT("the map being left is one of the Excluded Maps."));
+		return;
+	}
+
 	// The synchronous operation must use one coherent configuration even if a
 	// user callback mutates project settings while OnAutosaveStarted is running.
 	const int32 SaveDataFlags = Settings->SaveDataFlags;

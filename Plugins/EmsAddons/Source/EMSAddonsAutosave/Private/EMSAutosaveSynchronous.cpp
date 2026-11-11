@@ -14,9 +14,11 @@ bool UEMSAutosaveSubsystem::BeginSynchronousAutosave(
 	if (bIsShuttingDown
 		|| bSaveActive
 		|| ActiveSaveTask
+		|| PausedOperation != EEMSPausedOperation::None
 		|| IsCheckpointLoadInProgress()
 		|| IsSaveLoadInProgress()
-		|| CurrentSlot.IsEmpty())
+		|| CurrentSlot.IsEmpty()
+		|| IsSavingExcludedOn(GetWorld(), nullptr))
 	{
 		return false;
 	}
@@ -41,14 +43,19 @@ bool UEMSAutosaveSubsystem::BeginSynchronousAutosave(
 	if (!EMS
 		|| TargetSlot.IsEmpty()
 		|| !EMS->GetCurrentSaveGameName().Equals(CurrentSlot, ESearchCase::IgnoreCase)
-		|| !PreflightCarriedCustomFiles(CurrentSlot, TargetSlot, true)
-		|| !InvalidateCheckpointStoredIn(TargetSlot, true))
+		|| !PreflightCarriedCustomFiles(CurrentSlot, TargetSlot, true))
+	{
+		return false;
+	}
+	// Carrying custom files is already a write to the snapshot, even if the map-leave
+	// callback later cancels before EMS writes actors. Protect it across restarts too.
+	SetSlotUnavailable(TargetSlot, true);
+	if (!InvalidateCheckpointStoredIn(TargetSlot, true))
 	{
 		return false;
 	}
 	if (!CarryCustomFiles(CurrentSlot, TargetSlot))
 	{
-		SetSlotUnavailable(TargetSlot, true);
 		return false;
 	}
 	BeginSaveJournal(TargetSlot, CurrentSlot);
@@ -64,6 +71,7 @@ bool UEMSAutosaveSubsystem::BeginSynchronousAutosave(
 	// Reserve before exposing the start callback. RequestAutosave may be called by
 	// a listener, but TryStartPendingSave then sees bSaveActive and only queues it.
 	bSaveActive = true;
+	bSaveTargetInFlight = true;
 	ActiveReason = Reason;
 	ActiveDisplayName = AutosaveDisplayName;
 	ActiveSaveType = EEMSSaveSlotType::Autosave;
@@ -200,8 +208,11 @@ void UEMSAutosaveSubsystem::AbortSynchronousAutosave()
 
 	const FName FailedReason = ActiveReason;
 	const FString FailedSlot = ActiveSaveSlot;
+	// The reservation is kept through the failure callbacks below, which must already see the exclusion.
+	bSaveTargetInFlight = false;
 
-	// Nothing was written, so the previous slot is still the newest complete save.
+	// Actor data was not written, but carried custom files may have changed. The target
+	// stays persistently excluded while the previous complete slot becomes current again.
 	const bool bReturned = ReturnToPreviousSlot(ActivePreviousSlot, FailedSlot, EEMSSlotSwitch::LeaveWorld);
 	if (!FailedReason.IsNone())
 	{
