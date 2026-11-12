@@ -16,6 +16,7 @@ class EMSADDONSWORLDPARTITION_API AEMSWorldPartitionRuntimeManager
 
 public:
 	AEMSWorldPartitionRuntimeManager();
+	virtual void Serialize(FArchive& Ar) override;
 
 	UPROPERTY(SaveGame, VisibleInstanceOnly, BlueprintReadOnly, Category = "EMS Addons|World Partition Runtime Actors")
 	TArray<FEMSWorldPartitionRuntimeActorRecord> RuntimeActorRecords;
@@ -26,4 +27,11 @@ public:
 	virtual void ActorPreSave_Implementation() override;
 	virtual void ActorPreLoad_Implementation() override;
 	virtual void ActorLoaded_Implementation() override;
+
+private:
+	/** PIE-independent map package; old slot-wide records have no safe map ownership. */
+	UPROPERTY(SaveGame)
+	FName SavedWorldPackage;
+
+	bool bRejectedSaveData = false;
 };

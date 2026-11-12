@@ -3,6 +3,8 @@
 
 #include "EMSAddonsAuthority.h"
 #include "EMSAddonsGameThread.h"
+#include "EMSAddonsWorldPartition.h"
+#include "EMSPaths.h"
 #include "EMSWorldPartitionRuntimeSubsystem.h"
 #include "EMSWorldPartitionPlacedSubsystem.h"
 #include "EMSTypes.h"
@@ -10,6 +12,12 @@
 
 namespace
 {
+	FName GetWorldPackage(const UWorld* World)
+	{
+		return World ? FName(*FRedirectHelpers::ResolveWorldLevel(
+			UWorld::RemovePIEPrefix(World->GetOutermost()->GetName()))) : NAME_None;
+	}
+
 	//The authority rule needs the world anyway, and reading it here is what keeps the
 	//three interface events from dereferencing a null world to reach the subsystem.
 	UEMSWorldPartitionRuntimeSubsystem* ResolveRuntimeSubsystem(AEMSWorldPartitionRuntimeManager* Manager)
@@ -32,7 +40,36 @@ AEMSWorldPartitionRuntimeManager::AEMSWorldPartitionRuntimeManager()
 	//persistent level, which World Partition never streams, so it needs no equivalent.
 	SetIsSpatiallyLoaded(false);
 #endif
-	Tags.AddUnique(EMS::PersistentTag);
+	//Persistent-level ownership keeps this actor resident while cells stream. EMS's
+	//Persistent tag means slot-wide, cross-map state instead, which this registry is not.
+}
+
+void AEMSWorldPartitionRuntimeManager::Serialize(FArchive& Ar)
+{
+	const bool bLoadingSave = Ar.IsLoading() && Ar.IsSaveGame();
+	if (bLoadingSave)
+	{
+		//Missing fields must not inherit ownership or records from an earlier load.
+		SavedWorldPackage = NAME_None;
+		RuntimeActorRecords.Reset();
+		PlacedActorRecords.Reset();
+		bRejectedSaveData = false;
+	}
+	Super::Serialize(Ar);
+	if (bLoadingSave)
+	{
+		const FName CurrentWorldPackage = GetWorldPackage(GetWorld());
+		const FName ResolvedSavedPackage(*FRedirectHelpers::ResolveWorldLevel(SavedWorldPackage.ToString()));
+		if (SavedWorldPackage.IsNone() || CurrentWorldPackage.IsNone() || ResolvedSavedPackage != CurrentWorldPackage)
+		{
+			RuntimeActorRecords.Reset();
+			PlacedActorRecords.Reset();
+			bRejectedSaveData = true;
+			UE_LOG(LogEMSAddonsWorldPartition, Warning,
+				TEXT("Ignored World Partition manager save data with missing or different map ownership. SavedMap=%s CurrentMap=%s. Legacy unscoped records cannot be migrated safely; runtime actors reset and placed actors use authored defaults."),
+				*SavedWorldPackage.ToString(), *CurrentWorldPackage.ToString());
+		}
+	}
 }
 
 void AEMSWorldPartitionRuntimeManager::ActorPreSave_Implementation()
@@ -64,6 +101,7 @@ void AEMSWorldPartitionRuntimeManager::ActorPreSave_Implementation()
 			{
 				Subsystem->FinalizeManagerCapture(Manager);
 			}
+			if (IsValid(Manager)) Manager->SavedWorldPackage = GetWorldPackage(Manager->GetWorld());
 		});
 }
 
@@ -90,5 +128,13 @@ void AEMSWorldPartitionRuntimeManager::ActorLoaded_Implementation()
 	if (EMSAddons::HasPersistenceAuthority(this))
 	{
 		if (UEMSWorldPartitionPlacedSubsystem* Placed = GetWorld()->GetSubsystem<UEMSWorldPartitionPlacedSubsystem>()) Placed->HandleManagerLoaded(this);
+	}
+	if (bRejectedSaveData)
+	{
+		//An old global record and a new map record can coexist in a legacy stack.
+		//Do not let the rejected record prevent EMS from applying the valid one,
+		//regardless of their order in the archive or loader batch.
+		Tags.Remove(EMS::HasLoadedTag);
+		bRejectedSaveData = false;
 	}
 }

@@ -31,6 +31,12 @@ No placed spawner is needed. The spawn node fails if the location is not yet cov
 - Up to **4,096** runtime actor records are supported.
 - HLOD and runtime Data-Layer ownership are outside the supported scope. Restoration is server-authoritative; replication is the project's responsibility.
 
+## Maps and existing saves
+
+Records belong to their map. The internal manager stays in Unreal's persistent level while cells stream; it is not an EMS **Persistent Actor** that travels between maps. Use EMS **Full** multi-level saving for multiple World Partition maps in one slot. **Disabled** and **Streaming** retain EMS's single-map save behavior.
+
+**Existing saves:** manager records without map ownership are rejected with a warning, including old single-map saves. Managed runtime actors are not restored, and placed actors return to authored defaults, including previously destroyed placements. Save again to write map-scoped state. Foreign-map records are also rejected; configured EMS level redirects are respected.
+
 ## Alternatives
 
 Use [Actor Spawner](ACTOR_SPAWNER.md) if a runtime actor must belong to a specific streamed level or cell. Use normal Easy Multi Save if it can stay persistent without location-based World Partition streaming.

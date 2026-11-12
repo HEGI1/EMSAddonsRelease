@@ -39,6 +39,10 @@ The shared **Is Managed Actor Removal In Progress** node can be used in **End Pl
 
 Only main-world, persistent-level placements are supported. Runtime Data Layers, Level Instances, HLOD ownership, and conventional streamed sublevels are outside this feature's scope.
 
+Use EMS **Full** multi-level saving for multiple World Partition maps in one slot. The shared manager saves records per map and stays resident while cells stream.
+
+**Existing saves:** records without map ownership are rejected with a warning. Placed actors return to authored defaults, including previously destroyed placements. See [Maps and existing saves](WORLD_PARTITION_RUNTIME_ACTORS.md#maps-and-existing-saves) for the shared compatibility rules.
+
 ## Settings
 
 **EMS World Partition Placed Component** has no settings of its own.

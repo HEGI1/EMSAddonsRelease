@@ -20,7 +20,7 @@ All saves of one game share a **profile**, the current EMS slot name without the
 | Save | EMS slot |
 | --- | --- |
 | Autosave, **Autosave Slot Count** 0 | `<Profile>` |
-| Autosave, **Autosave Slot Count** N | `<profile>_autosave_0` … `<profile>_autosave_<N-1>`; unused slots first, then the oldest |
+| Autosave, **Autosave Slot Count** N | `<profile>_autosave_0` … `<profile>_autosave_<N-1>`; unused slots first, then a slot known to be incomplete, then the oldest |
 | **Manual Save** | `<profile>_manual_<name>` |
 | Checkpoint | `<profile>_checkpoint`, or `<profile>_checkpoint_<checkpoint slot name>` |
 
@@ -100,7 +100,7 @@ Leaving the map clears all blockers, including ones added from the Game Instance
 - Do not call **Set Current Save Slot** on Begin Play. It replaces the slot **Load Save** selected, and the load fails.
 - Your own **Save Game Actors** call writes the current slot. Right after a checkpoint, that is the checkpoint slot, so the checkpoint ends. Use **Request Autosave** or **Manual Save** instead.
 - **Autosave When Leaving Map** saves synchronously and can cause a brief hitch. It is skipped while EMS is busy or autosaves are blocked, and for **Load Save** travel.
-- Starting a load cancels pending autosaves. When a save's map no longer exists, **Load Save** and **Load Last Checkpoint** report failure and the previous slot becomes current again.
+- Starting a load cancels pending autosaves. When a save's map no longer exists, **Load Save** and **Load Last Checkpoint** report failure and the previous slot becomes current again. The same applies when EMS fails to load a checkpoint on the current map.
 - **Carried Custom Files** (slot-bound EMS custom saves) are copied into each new save. Fetch them with **Get Custom Save** when needed instead of keeping the object across saves.
 - Checkpoint IDs are assigned automatically. Use **Regenerate Checkpoint ID** only to fix a duplicate; changing an established ID breaks existing saves.
 - Saves and checkpoints from 1.1 keep working without migration.

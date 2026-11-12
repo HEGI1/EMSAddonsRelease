@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.3.0 - 2026-11-12
+
+### Fixed
+
+- **World Partition runtime and placed actors:** save the shared manager per map instead of as an EMS traveling Persistent Actor. Basic/Full saves keep maps separate, including when saving an ordinary map. Map ownership checks reject foreign records and respect EMS level redirects.
+
+### Compatibility
+
+- **Existing World Partition saves:** records without map ownership are rejected with a warning, including old single-map saves. Managed runtime actors are not restored; placed actors return to authored defaults, including previously destroyed placements. Save again to write map-scoped state.
+
 ## 1.2.8 - 2026-11-12
 
 ### Fixed
