@@ -1,49 +1,50 @@
 # Actor Spawner
 
-Use **EMS Actor Spawner** for runtime actors that belong to a specific streamed level or World Partition cell. For actors that follow their *current* World Partition location, use [World Partition Runtime Actors](WORLD_PARTITION_RUNTIME_ACTORS.md).
+Use **EMS Actor Spawner** for runtime actors that belong to one streamed level or World Partition cell. The actors stream out and back in with the spawner. For actors that should follow their *current* location instead, use [World Partition Runtime Actors](WORLD_PARTITION_RUNTIME_ACTORS.md).
 
-## Basic use
+## Quick start
 
 1. Place an **EMS Actor Spawner** in the level or cell that should own the actors.
-2. Call **Spawn Actor** on that spawner.
-3. Keep the returned actor ID if you need to find or remove the actor later.
-4. Call **Destroy Spawned Actor** for permanent removal.
-5. Save and load normally through EMS.
+2. Call **Spawn Actor** on it. Keep the returned ID if you need to find the actor later.
+3. Call **Destroy Spawned Actor** to remove one permanently.
+4. Save and load normally through EMS.
 
-Spawned actors do **not** need the EMS Actor Save Interface. The spawner saves their state and restores them when its level or cell returns.
+Spawned actors don't need the EMS Actor Save Interface; the spawner saves and restores them.
+
+## Good to know
+
+- **Spawn Actor** fails while EMS is saving or loading. Spawning from the spawner's own restore events is fine.
+- Restored actors get the normal EMS load callbacks.
+- Attachment to the spawner is restored. Re-attach spawned actors to each other in **On Actor Restored**.
+- Duplicating a spawner in the editor gives the copy a new identity. Moving it to another level keeps its identity.
+- Spawning, removal, and restoration run on the server or in standalone. Replication is your project's responsibility.
 
 ## Blueprint nodes
 
-- **Spawn Actor** — creates and registers an actor.
-- **Destroy Spawned Actor** — permanently removes a registered actor.
-- **Get Spawned Actor** — finds a currently spawned actor by its saved ID.
-- **Get All Spawned Actors** — returns currently spawned actors.
-- **Get Spawned Actor ID** — gets the ID of a spawned actor.
-- **Was Spawned By This** — checks spawner ownership.
-- **Has Spawned Actor Record** — checks whether a saved ID is still registered.
-- **Has Finished Restoring** / **Get Last Restore Result** — check restore status.
-- **Get Spawner Identity** — returns the spawner's persistent ID, for diagnostics.
+Call these on **EMS Actor Spawner**.
+
+| Task | Nodes |
+| --- | --- |
+| Spawn or remove | **Spawn Actor**, **Destroy Spawned Actor** |
+| Find actors | **Get Spawned Actor**, **Get All Spawned Actors**, **Get Spawned Actor Id** |
+| Check ownership | **Was Spawned By This**, **Has Spawned Actor Record** |
+| Check restoration | **Has Finished Restoring**, **Get Last Restore Result** |
+| Read the spawner's ID | **Get Spawner Identity** |
 
 ## Events
 
-- **On Actor Spawned** / **On Actor Removed**
-- **On Restore Started** / **On Actor Restored** / **On Restore Finished**
+| Event | Meaning |
+| --- | --- |
+| **On Actor Spawned** | **Spawn Actor** created an actor. |
+| **On Actor Removed** | A spawned actor was destroyed during gameplay. |
+| **On Restore Started** | The spawner began restoring its saved actors. |
+| **On Actor Restored** | One actor was restored. Rebuild links between actors here. |
+| **On Restore Finished** | Restoration ended. Check the result for failed or skipped actors. |
 
-Use **On Actor Restored** to rebuild relationships between spawned actors when necessary.
-
-## Important behavior
-
-- The spawner controls where its actors stream in and out. It is spatially loaded by default in World Partition.
-- **Spawn Actor** can fail during an EMS save or load. Avoid ordinary gameplay spawns while EMS is busy; the spawner's own restore callbacks can perform reentrant work during restoration.
-- Duplicating a spawner in the editor gives the copy a new identity. Moving it to another level preserves its identity.
-- Attachment to the spawner is restored. Attachments between spawned actors should be re-established after restoration.
-- Restored actors receive normal EMS load callbacks. Check **Get Last Restore Result** before depending on data from a failed restore.
-- Spawning, removal, and restoration are server-authoritative; replication is the project's responsibility.
+Some actors finish restoring later, such as an **EMS Level Sequence Actor** or **EMS Geometry Collection Actor**. If that matters, check them with **Is EMS Addon Restore Complete**.
 
 ## Settings
 
-**EMS Actor Spawner**
-
-| Setting | Default | Meaning |
+| Setting | Default | Purpose |
 | --- | --- | --- |
-| **Max Spawned Actors** | 1024 | Maximum number of actor records this spawner manages. Lowering it at runtime stops saving and restoring records past the new limit. |
+| **Max Spawned Actors** | 1,024 | How many actors this spawner manages. |

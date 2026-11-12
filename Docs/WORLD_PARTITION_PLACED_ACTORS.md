@@ -1,52 +1,44 @@
 # World Partition Placed Actors
 
-Use **EMS World Partition Placed Component** for editor-placed actors that should save their state and follow World Partition streaming as they move around the map.
+Use **EMS World Partition Placed Component** for actors placed in the editor that move around a World Partition map, such as vehicles or pushable objects. They unload when their current area streams out and return, with their saved state, when it streams back in.
 
-## Basic use
+## Quick start
 
-1. Implement the **EMS Actor Save Interface** on the actor class.
-2. Place the actor in the **main World Partition map**.
-3. Add **EMS World Partition Placed Component** in the editor, either to the class or to the placed actor.
+1. Add the **EMS Actor Save Interface** to the actor class.
+2. Place the actor in the **main** World Partition map.
+3. Add one **EMS World Partition Placed Component** to the class or the placed actor in the editor.
 4. Save the map, then save and load normally through EMS.
 
-Use **one component per actor**. Adding it at runtime does not enroll an actor.
+The component turns off the actor's **Is Spatially Loaded** setting automatically; leave it off. Adding the component at runtime has no effect.
+
+## Good to know
+
+- Actors move freely between cells and keep their identity across streaming and loads.
+- A character or physics actor also unloads when the floor under it streams out.
+- Destroying an actor during gameplay is permanent. Loading an earlier save brings it back if it was alive then.
+- Link actors with **soft references** or saved IDs. Hard references and attachments aren't reconnected after recreation.
+- Only saved variables survive recreation. Mark per-instance values for EMS saving; extra components added only on the placed instance are not rebuilt.
+- Add an [EMS Physics Streaming Guard](PHYSICS_STREAMING_GUARD.md) in the actor's class if it needs one after recreation.
+- In **End Play**, use **Is Managed Actor Removal In Progress** to tell streaming removal apart from gameplay destruction.
+- Up to 4,096 placed actors per map, including destroyed ones.
+- Restoration runs on the server or in standalone. Replication is your project's responsibility.
+
+**Not supported:** actors in Level Instances, conventional streamed sublevels, Runtime Data Layers, or HLODs.
+
+## Multiple maps and older saves
+
+Each map keeps its own actors. To keep several World Partition maps in one save slot, set EMS **Multi-Level Saving** to **Basic** or **Full**. With **Disabled** or **Streaming**, EMS keeps only the current map's data.
+
+**Saves from before 1.3.0** don't restore these actors: they return to their editor-placed state, including ones the player destroyed, and a warning is logged. Save again to write data in the new format. A save with no data for an actor also uses its editor-placed state.
 
 ## Blueprint nodes
 
-Get **EMS World Partition Placed Subsystem** with **Get World Subsystem** to call:
+Use **Get World Subsystem** → **EMS World Partition Placed Subsystem** for the queries. **Get Placement Id** is on the component.
 
-- **Is Placed Actor Managed** — checks whether an actor is managed.
-- **Get Managed Placed Actors** — returns currently active managed placed actors, not dormant records.
+| Task | Nodes |
+| --- | --- |
+| Check an actor | **Is Placed Actor Managed**, **Is Managed Actor Removal In Progress** |
+| List loaded actors | **Get Managed Placed Actors** |
+| Read the actor's saved ID | **Get Placement Id** |
 
-Call **Get Placement Id** on the component for the actor's persistent ID.
-
-The shared **Is Managed Actor Removal In Progress** node can be used in **End Play** to distinguish automatic streaming removal from gameplay destruction. It works with both placed and runtime actors.
-
-## Important behavior
-
-- An actor stays active while its current location is covered by loaded World Partition content. When its area unloads, it is saved and removed, then recreated with its saved state when the area returns.
-- Characters and simulating actors can also unload when streamed geometry supporting them disappears, even if another cell covers their location.
-- Moving between cells needs no special handover. The actor retains its identity across streaming and saved-game loads.
-- Gameplay destruction is persistent. Loading an earlier save can restore an actor that was alive in that save.
-- If an older save has no data for the placed actor, it uses the actor's authored defaults.
-- For relationships between streamed actors, prefer **soft references** or saved IDs. Hard actor references and attachments are not automatically rebound after recreation.
-- Mark instance-specific variables for EMS saving when they must survive recreation. Unsaved instance overrides and additional instance components are not reconstructed.
-- Author **EMS Physics Streaming Guard** on the actor class if it must remain available after recreation. See [Physics Streaming Guard](PHYSICS_STREAMING_GUARD.md).
-- Up to **4,096** placed actor records are supported, including destroyed actors.
-- Restoration is server-authoritative; replication is the project's responsibility.
-
-## Limitations
-
-Only main-world, persistent-level placements are supported. Runtime Data Layers, Level Instances, HLOD ownership, and conventional streamed sublevels are outside this feature's scope.
-
-Use EMS **Full** multi-level saving for multiple World Partition maps in one slot. The shared manager saves records per map and stays resident while cells stream.
-
-**Existing saves:** records without map ownership are rejected with a warning. Placed actors return to authored defaults, including previously destroyed placements. See [Maps and existing saves](WORLD_PARTITION_RUNTIME_ACTORS.md#maps-and-existing-saves) for the shared compatibility rules.
-
-## Settings
-
-**EMS World Partition Placed Component** has no settings of its own.
-
-| Setting | Default | Meaning |
-| --- | --- | --- |
-| **Is Spatially Loaded** (on the actor) | Off, enforced | The component turns it off automatically. Leave it off; the addon streams the actor by its current location. |
+The component has no settings.

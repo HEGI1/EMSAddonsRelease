@@ -1,33 +1,32 @@
-# Geometry Collection Persistence
+# Geometry Collection
 
-Use **EMS Geometry Collection Actor** to save and restore fractured Chaos Geometry Collection state with EMS.
+Use **EMS Geometry Collection Actor** to save which pieces of a Chaos Geometry Collection have broken off and where they are.
 
-## Basic use
+## Quick start
 
 1. Place an **EMS Geometry Collection Actor** instead of the standard Geometry Collection Actor.
-2. Assign its Geometry Collection asset and configure Chaos normally.
-3. Save and load through EMS.
+2. Assign its Geometry Collection asset and set up Chaos as usual.
+3. Save and load normally through EMS.
 
-The actor supports streamed levels and World Partition. It already includes **EMS Physics Streaming Guard**; see [Physics Streaming Guard](PHYSICS_STREAMING_GUARD.md).
+It works in streamed levels and World Partition, and already includes a [Physics Streaming Guard](PHYSICS_STREAMING_GUARD.md).
+
+## Good to know
+
+- Fracture state and piece positions are saved. Chaos removal and decay timers are not.
+- By default, a save only restores onto the same Geometry Collection asset. See **Asset Mismatch Policy** below.
+- Restoration may take a moment while Chaos starts up. If it can't finish, the saved state is kept for the next load.
+- Saving and restoration run on the server or in standalone. Replication is your project's responsibility.
 
 ## Blueprint nodes
 
-- **Is EMS Addon Restore Complete** — checks whether restoration has finished.
-- **Get EMS Addon Restore Result** — checks its outcome.
+| Task | Nodes |
+| --- | --- |
+| Check whether restoration finished, and how | **Is EMS Addon Restore Complete**, **Get EMS Addon Restore Result** |
 
-Call these nodes on the EMS Geometry Collection Actor.
-
-## Important behavior
-
-- By default, restoration requires the same Geometry Collection asset and hierarchy. **Asset Mismatch Policy** can relax this.
-- Restoration can wait briefly for Chaos to become ready. If it cannot finish, the saved state is retained for a later load.
-- Fracture hierarchy and piece transforms are saved; Chaos removal and decay state are not.
-- Capture and restoration are server-authoritative. The project handles replication.
+Use the actor as **Target**. "Complete" doesn't always mean "succeeded"; check the result.
 
 ## Settings
 
-**EMS Geometry Collection Actor**
-
-| Setting | Default | Meaning |
+| Setting | Default | Purpose |
 | --- | --- | --- |
-| **Asset Mismatch Policy** | Reject | **Reject** restores only onto the saved asset. **Allow If Hierarchy Matches** also accepts a different asset whose hierarchy and authored transforms match. |
+| **Asset Mismatch Policy** | Reject | **Reject** restores only onto the saved asset. **Allow If Hierarchy Matches** also accepts a different asset with the same pieces. |

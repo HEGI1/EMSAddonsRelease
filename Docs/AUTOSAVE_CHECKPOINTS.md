@@ -1,154 +1,210 @@
 # Autosave and Checkpoints
 
-Use **Autosave and Checkpoints** for automatic saves, manual saves, save slots and gameplay checkpoints. Every save is an ordinary EMS slot, so **Continue** is a normal EMS load.
+Add autosaves, player-named saves, save menus, and checkpoints to an EMS project. Every save is an ordinary EMS slot, and the newest successful save becomes the current slot, so a **Continue** button can use a normal EMS load.
 
-## Basic use
+## Quick start
 
-1. Open **Project Settings → Easy Multi Save Addons → Autosave and Checkpoints** and choose the EMS data to save, usually **Player** and **Level**.
-2. Add your main menu, front-end and loading maps to **Excluded Maps**. See [Menu and loading maps](#menu-and-loading-maps).
-3. Set the profile with **Set Current Save Slot** (for example `Game1`) when the player starts or picks a game.
-4. Call **Request Autosave** from gameplay, or enable the automatic triggers.
-5. Call **Manual Save** for player-named saves.
-6. Place an **EMS Checkpoint** and call **Load Last Checkpoint** to return to it.
+Get **EMS Autosave Subsystem** with **Get Game Instance Subsystem**, then:
 
-Use **Get Game Instance Subsystem** to access **EMS Autosave Subsystem**.
-
-## Save slots
-
-All saves of one game share a **profile**, the current EMS slot name without the addon's suffix. Each save becomes the current EMS slot.
-
-| Save | EMS slot |
+| To… | Do this |
 | --- | --- |
-| Autosave, **Autosave Slot Count** 0 | `<Profile>` |
-| Autosave, **Autosave Slot Count** N | `<profile>_autosave_0` … `<profile>_autosave_<N-1>`; unused slots first, then a slot known to be incomplete, then the oldest |
-| **Manual Save** | `<profile>_manual_<name>` |
-| Checkpoint | `<profile>_checkpoint`, or `<profile>_checkpoint_<checkpoint slot name>` |
+| Autosave at a milestone | Call **Request Autosave**. |
+| Let the player name a save | Call **Manual Save** with a **Save Name**. |
+| Add a checkpoint | Place an **EMS Checkpoint** and resize its **Trigger**. It activates when the player walks in. |
+| Return to the last checkpoint | Call **Load Last Checkpoint**. |
 
-Generated slot IDs are lowercase, so manual save names and **Checkpoint Slot Name** values that differ only in case share a slot. With **Autosave Slot Count** 0 the profile slot keeps its spelling, and existing mixed-case saves keep their paths and are still reused. After a save to a generated slot, **Get Save Profile** returns the lowercase profile (for example `game1`), so compare profiles ignoring case.
+The defaults work out of the box. Timed and map-travel autosaves are off until you turn them on in [Settings](#settings).
 
-EMS removes characters a file name cannot hold, such as `?`, `*` or `:`. **Manual Save** returns false for a **Save Name** with nothing left, such as `??`; a **Checkpoint Slot Name** like that uses the default checkpoint slot.
+Two rules prevent the most common problems:
 
-Do not end profile names with the reserved suffixes `_autosave_<0-9>`, `_manual_<name>`, `_checkpoint` or `_checkpoint_<name>`, in any case.
+- **Add menu and loading maps to Excluded Maps.** Otherwise an autosave there can write the menu into the player's save. See [Menu and loading maps](#menu-and-loading-maps).
+- **Don't call Set Current Save Slot on Begin Play.** Call it only when the player starts or picks a game. On Begin Play it replaces the slot that **Load Save** just selected, and the load fails.
 
-## Menu and loading maps
-
-EMS keeps the last played slot current, also in your main menu. A save there would write the menu map into the player's profile; with **Autosave Slot Count** 0 it replaces their progress, and **Load Save** or Continue would open the menu.
-
-List every map that is not gameplay in **Excluded Maps**. There the addon never saves: **Request Autosave**, **Manual Save** and **Activate Checkpoint** return false, checkpoint triggers do not save, and no automatic trigger fires, including **Autosave When Leaving Map** on the way out. **Load Save** and **Load Last Checkpoint** still work.
-
-## Save and load menus
-
-- **Get Save Slots** lists the profile's saves, newest first. Use EMS **Get Named Slot Info** and **Import Save Thumbnail** for details such as level and players.
-- **Get Save Slots With Details** adds **Slot Name**, **Display Name**, **Save Type** (Autosave, Manual, Checkpoint) and **Time Stamp**. **Get Save Slot Details** reads one slot and returns false if it is missing. Neither node changes the current slot.
-- **Load Save** makes a slot current, opens its map and loads it. **On Save Loaded** / **On Save Load Failed** report the result.
-- **Get Save Profile** / **Get Slot Profile** return the profile of the current slot or of any slot name.
-
-These nodes skip saves known to be incomplete; see [Failure handling and recovery](#failure-handling-and-recovery).
-
-## Display names
-
-Use **Display Name** for menu text, such as `Factory Inner`, and **Slot Name** for loading and EMS operations. Labels are Text, so they keep capitalization, spaces, punctuation and localization. Duplicate labels are allowed.
-
-| Save | Set its label |
-| --- | --- |
-| Checkpoint | The actor's **Display Name**. **Checkpoint Slot Name** selects the slot. |
-| Autosave | **Set Autosave Display Name** when the location changes. **Request Autosave → Display Name** overrides it for one request. |
-| Manual | **Manual Save → Display Name**; empty uses **Save Name**, which selects the slot. |
-
-Names are captured when requested; combined requests keep the latest. The current autosave name survives map travel but is not saved, so set it again on new game, load and map change.
-
-**Set Save Slot Display Name** renames a slot without changing its data, timestamp or rotation order. Empty or whitespace clears the label. It returns false while busy, on clients, or for a missing slot.
-
-Saves without a label show a fallback: the manual or checkpoint name, `Checkpoint`, or `Autosave` / `Autosave 1` and so on.
+**On this page:** [Checkpoints](#checkpoints) · [Autosaves](#autosaves) · [Manual saves](#manual-saves) · [Save menus](#save-and-load-menus) · [Menu maps](#menu-and-loading-maps) · [Multiple games](#several-games-per-player) · [Good to know](#good-to-know) · [Reference](#blueprint-nodes)
 
 ## Checkpoints
 
-1. Place an **EMS Checkpoint** and size its Trigger volume.
-2. The player enters the trigger, or call **Activate Checkpoint** on the actor.
-3. Call **Load Last Checkpoint** to return. The player is placed at the trigger's center, also across maps.
+1. Place an **EMS Checkpoint** in a gameplay map.
+2. Resize its **Trigger**. The trigger's center is where the player respawns.
+3. The checkpoint activates when the player enters it, or when you call **Activate Checkpoint**.
+4. Call **Load Last Checkpoint** to return. It opens the checkpoint's map if needed and places the player at the trigger center, keeping the saved rotation.
 
-Checkpoints have their own slots, so autosaves and manual saves do not replace them, and each save remembers its checkpoint. Checkpoints with the same **Checkpoint Slot Name** share one slot. Use **Reset Checkpoint** to let a **Trigger Once** checkpoint activate again.
+Use **Has Checkpoint** to decide whether to show a "Load checkpoint" option.
 
-Reactivating a checkpoint replaces its snapshot. Older saves that referred to the replaced snapshot no longer offer **Load Last Checkpoint**.
+**Activated is not saved yet.** **On Checkpoint Activated** means the request was accepted. Wait for **On Checkpoint Committed** to know the checkpoint was written.
 
-## Autosave blockers
+**Trigger Once** is on by default and is remembered across save and load. Call **Reset Checkpoint** to let it fire again.
 
-Use **Add Autosave Blocker** / **Remove Autosave Blocker** to hold autosaves during combat or cutscenes. Held requests are delayed or combined until saving is allowed. **Manual Save** ignores blockers, **Enable Autosave** and the minimum interval.
+**Checkpoint slots.** Each checkpoint save goes into its own slot, and later autosaves and manual saves keep a reference to it. **Checkpoint Slot Name** chooses that slot:
 
-Leaving the map clears all blockers, including ones added from the Game Instance. Add them again on the new map if needed.
+- Empty (default): all checkpoints share one slot, and each new checkpoint replaces the last.
+- Different names: separate snapshots are kept. Checkpoints with the same name replace each other.
+
+When a checkpoint slot is overwritten, older saves that pointed to the previous snapshot stop offering **Load Last Checkpoint** rather than loading the wrong one.
+
+Checkpoint IDs are assigned automatically. Use **Regenerate Checkpoint ID** only to fix a duplicate; changing an ID breaks references in existing saves.
+
+## Autosaves
+
+Call **Request Autosave** at meaningful moments, such as finishing an objective. You can also turn on automatic triggers in [Settings](#settings): **Periodic Autosave Interval**, **Autosave After Map Load**, and **Autosave When Leaving Map**.
+
+Requests wait for blockers, the **Minimum Time Between Saves**, and streaming to finish. Waiting requests can be combined into one save, so **true** means "accepted", not "written". Use the [events](#events) for the outcome.
+
+### Keep several autosaves
+
+**Autosave Slot Count** controls how many autosaves are kept:
+
+| Count | Behavior |
+| --- | --- |
+| `0` (default) | Overwrite the profile's main slot. |
+| `1` | Overwrite one dedicated autosave slot. |
+| `2`–`10` | Rotate through that many slots, replacing the oldest. |
+
+Use `2` or more if you want a fallback when a save fails or the game crashes mid-save.
+
+### Pause autosaving
+
+Call **Add Autosave Blocker** with a name such as `Combat` or `Cutscene`, and **Remove Autosave Blocker** with the same name afterward. Saving resumes when the last blocker is removed. Blockers are cleared on map change, so add them again on the new map if needed.
+
+## Manual saves
+
+Call **Manual Save** with a **Save Name**. Saving again with the same name replaces that save. An optional **Display Name** sets the menu label.
+
+Manual saves ignore **Enable Autosave**, blockers, and the minimum save interval. They return `false` on an excluded map, while another EMS save or load is running, while streaming isn't ready, or if the name has no characters a file name can use (for example `??`).
+
+## Save and load menus
+
+1. Call **Get Save Slots With Details** to list the current profile's saves, newest first.
+2. Show each row's **Display Name**, **Save Type** (`Autosave`, `Manual`, or `Checkpoint`), and **Time Stamp**. Keep its **Slot Name** for loading.
+3. Pass the **Slot Name** to **Load Save**.
+4. Finish the menu action on **On Save Loaded** or **On Save Load Failed**.
+
+**Load Save** always reopens the saved map from a fresh world, even if the player is already there. Unsaved progress is lost. Listing saves never changes the current slot, and saves known to be incomplete are hidden.
+
+For thumbnails, level names, or player data, use EMS's **Get Named Slot Info** and **Import Save Thumbnail** with the **Slot Name**.
+
+### Display names
+
+**Display Name** is the menu label; **Slot Name** is the file identity. Labels keep capitalization and spaces, support localization, and may repeat.
+
+| Save type | Set the label with |
+| --- | --- |
+| Checkpoint | The checkpoint actor's **Display Name** |
+| Autosave | **Set Autosave Display Name** (for example the current area), or **Request Autosave → Display Name** for one save |
+| Manual | **Manual Save → Display Name**; empty uses the **Save Name** |
+
+The autosave display name survives map travel but is not saved to disk, so set it again after starting or loading a game. **Set Save Slot Display Name** renames an existing save without touching its data. Saves without a label show their save name, `Checkpoint`, or `Autosave 1`, `Autosave 2`, and so on.
+
+## Menu and loading maps
+
+EMS keeps the last played slot current when the player returns to a menu. An autosave there would write the menu map into their save, and **Continue** would then open the menu.
+
+Add every non-gameplay map to **Excluded Maps**. On those maps, the addon never saves: **Request Autosave**, **Manual Save**, and checkpoint activation return `false`, and automatic autosaves don't run. **Load Save** and **Load Last Checkpoint** still work. Your own direct EMS save calls are not affected.
+
+## Several games per player
+
+A **profile** groups the saves of one playthrough. Without setup, everything uses the EMS default slot as one profile.
+
+For separate games, call **Set Current Save Slot** with a profile name such as `Game1` when the player **starts or selects** a game. Save menus then list only that profile's saves. **Get Save Profile** returns the current profile.
+
+## Good to know
+
+You can skip this section until you need it.
+
+**Saving and loading through EMS**
+
+- After a checkpoint, the current slot is the checkpoint slot. A direct EMS **Save Game Actors** call would overwrite the checkpoint, so use **Request Autosave** or **Manual Save** for later progress.
+- Starting a load cancels waiting autosaves, so they can't overwrite the state being loaded.
+- **Carried Custom Files** copies listed EMS custom save files into each new addon save. Fetch them with **Get Custom Save** when needed.
+- Saving and loading run on the server or in standalone. Replication is your project's responsibility.
+- Saves and checkpoints from version 1.1 load without migration.
+
+**World Partition and level streaming**
+
+- Cells or sublevels streaming in delay waiting saves; they are not canceled.
+- Use EMS **1.86** or newer. With EMS 1.85, each addon save clears EMS's in-memory streaming data, and the addon logs a warning.
+- If **Save Data Flags** leaves out **Level**, the slot has no Level data until a later save includes it.
+
+**Pause menus**
+
+**Manual Save**, **Load Save**, and **Load Last Checkpoint** to another map work while paused. **Load Last Checkpoint** on the current map returns `false`; unpause first.
+
+If the pause interrupted an EMS streaming load, the game briefly unpauses (up to 2 seconds) to finish it, then runs the request; a timeout reports failure through the usual event. Any save or game load already running returns `false`, so disable conflicting menu buttons until the completion or failure event.
+
+**Failed and interrupted saves**
+
+If an addon save fails, the addon hides the incomplete slot from menus and loads and tries to switch back to the previous slot. After a crash mid-save, or if EMS blocked that switch, it tries again on the next start. This is recovery, not a backup: with **Autosave Slot Count** `0` or `1` there may be no earlier save to return to.
+
+Changing the EMS user cancels waiting and running addon saves. Direct EMS calls bypass the addon's incomplete-save filtering.
+
+**Save slot names**
+
+| Save | EMS slot name |
+| --- | --- |
+| Autosave, count `0` | `<Profile>` |
+| Autosave, count `N` | `<profile>_autosave_0` … `<profile>_autosave_<N-1>` |
+| Manual save | `<profile>_manual_<name>` |
+| Checkpoint | `<profile>_checkpoint`, or `<profile>_checkpoint_<slot name>` |
+
+Generated names are lowercase, so names that differ only in case share a slot, and **Get Save Profile** may return `game1` for `Game1`. Compare profiles ignoring case, and don't end profile names with these suffixes.
 
 ## Blueprint nodes
 
-- **Request Autosave** / **Manual Save**
-- **Load Save** / **Get Save Slots** / **Get Save Profile** / **Get Slot Profile** / **Is Save Load In Progress**
-- **Get Save Slots With Details** / **Get Save Slot Details** / **Set Save Slot Display Name**
-- **Set Autosave Display Name** / **Get Autosave Display Name**
-- **Load Last Checkpoint** / **Has Checkpoint** / **Get Current Checkpoint**
-- **Add Carried Custom File** / **Remove Carried Custom File**
-- **Add Autosave Blocker** / **Remove Autosave Blocker** / **Is Autosave Blocked** / **Is Autosave Active**
-- **Set Periodic Autosave Interval** / **Get Periodic Autosave Interval**
-- Checkpoint actor: **Activate Checkpoint** / **Reset Checkpoint** / **Was Activated This Session** / **Is Activation Pending**
+Subsystem nodes are on **EMS Autosave Subsystem**. Checkpoint actor nodes are on **EMS Checkpoint**.
+
+| Task | Nodes |
+| --- | --- |
+| Save | **Request Autosave**, **Manual Save** |
+| Load and list | **Load Save**, **Get Save Slots With Details**, **Get Save Slots**, **Get Save Slot Details**, **Is Save Load In Progress** |
+| Checkpoints | **Load Last Checkpoint**, **Has Checkpoint**, **Get Current Checkpoint** |
+| Labels | **Set Autosave Display Name**, **Get Autosave Display Name**, **Set Save Slot Display Name** |
+| Profiles | **Get Save Profile**, **Get Slot Profile** |
+| Autosave control | **Add Autosave Blocker**, **Remove Autosave Blocker**, **Is Autosave Blocked**, **Is Autosave Active**, **Set Periodic Autosave Interval**, **Get Periodic Autosave Interval** |
+| Custom files | **Add Carried Custom File**, **Remove Carried Custom File** |
+| Checkpoint actor | **Activate Checkpoint**, **Reset Checkpoint**, **Was Activated This Session**, **Is Activation Pending** |
+
+**Set Periodic Autosave Interval** applies to the current session only; `0` turns the timer off.
 
 ## Events
 
-- **On Autosave Started** / **On Autosave Completed** / **On Autosave Failed** (Reason `Manual` for manual saves)
-- **On Checkpoint Activated** (also on the checkpoint actor) / **On Checkpoint Committed** / **On Checkpoint Loaded** / **On Checkpoint Load Failed**
-- **On Save Loaded** / **On Save Load Failed**
+Bind these on **EMS Autosave Subsystem** before making a request. Handle a `false` return immediately; it never produces a later event.
 
-## Important behavior
+| Event | Meaning |
+| --- | --- |
+| **On Autosave Started** | An addon save is starting. |
+| **On Autosave Completed** / **On Autosave Failed** | The save finished or failed. Also covers manual and checkpoint saves. |
+| **On Checkpoint Activated** | A checkpoint activation was accepted. Also on the checkpoint actor. |
+| **On Checkpoint Committed** | The checkpoint was saved. |
+| **On Checkpoint Loaded** / **On Checkpoint Load Failed** | A checkpoint load finished, failed, or was canceled. |
+| **On Save Loaded** / **On Save Load Failed** | A **Load Save** finished or failed. |
 
-- Do not call **Set Current Save Slot** on Begin Play. It replaces the slot **Load Save** selected, and the load fails.
-- Your own **Save Game Actors** call writes the current slot. Right after a checkpoint, that is the checkpoint slot, so the checkpoint ends. Use **Request Autosave** or **Manual Save** instead.
-- **Autosave When Leaving Map** saves synchronously and can cause a brief hitch. It is skipped while EMS is busy or autosaves are blocked, and for **Load Save** travel.
-- Starting a load cancels pending autosaves. When a save's map no longer exists, **Load Save** and **Load Last Checkpoint** report failure and the previous slot becomes current again. The same applies when EMS fails to load a checkpoint on the current map.
-- **Carried Custom Files** (slot-bound EMS custom saves) are copied into each new save. Fetch them with **Get Custom Save** when needed instead of keeping the object across saves.
-- Checkpoint IDs are assigned automatically. Use **Regenerate Checkpoint ID** only to fix a duplicate; changing an established ID breaks existing saves.
-- Saves and checkpoints from 1.1 keep working without migration.
-
-### Pause menus
-
-- While paused, **Load Last Checkpoint** for a checkpoint on the current map returns false, because EMS does not load during pause.
-- A pause can stop an EMS streaming load mid-task, such as a World Partition cell loading. **Manual Save**, **Load Save** and a map-changing **Load Last Checkpoint** still work then: the game runs until that work finishes (at most 2 seconds), pauses again and the request runs. Meanwhile **Is Autosave Active** or **Is Save Load In Progress** returns true, so the menu can keep Resume disabled.
-- If that wait times out, or the EMS user or profile changes during it, the request reports failure once through its usual event. A running game load or any active save, including an ordinary Level-only disk save, makes the request return false and leaves the pause unchanged. EMS 1.85/1.86 do not publicly expose the flags identifying memory-only streaming saves, so those saves also require unpausing first; only identifiable streaming loads are waited out.
-
-### Streaming and EMS versions
-
-- A World Partition cell or sub-level streaming in only delays a save. **Request Autosave** and checkpoint activation are accepted during it and save once it has finished. A game load (**Load Game Actors**) refuses them and cancels pending requests.
-- With EMS 1.86, an addon save removes its target's old Level file before switching slots, so World Partition and level streaming keep restoring from memory. If the removal fails, the save is refused. The target cannot be loaded until the save finishes. A save without Level in **Save Data Flags** leaves the slot without Level data until a later Level save.
-- EMS 1.85 clears streaming memory when switching slots. The addon logs a warning.
-- When a save fails under streaming, the previous slot becomes current again and World Partition reloads streamed cells from it. The addon logs a warning.
-
-## Failure handling and recovery
-
-- Requests and running saves belong to the EMS user and profile that made them. Changing either, also from **On Autosave Started**, cancels them. Cleanup never switches to or deletes another user's slots.
-- A save succeeds only when EMS has written fresh Slot Info, the display metadata and, for checkpoints, the checkpoint record. On failure, the previous slot becomes current again and the incomplete target is deleted where possible. A save into the current slot has nothing to return to; **Autosave Slot Count** 0 or 1 can do that, 2 or more never replaces the current autosave.
-- Before changing checkpoint records or **Carried Custom Files**, the addon persists an exclusion for the target and its EMS user in the `EmsUser` config. Preparation has no full rollback: a canceled save, failed copy or travel interruption can leave older actors beside newer custom data, but that target stays hidden from addon menus, details, checkpoint resolution and loads, including after restart. This also applies to **Autosave When Leaving Map** and saves into the current slot.
-- The exclusion takes effect when a save fails, is canceled or is cut off. While the save is still running, its target stays listed and **Has Checkpoint** / **Get Current Checkpoint** keep reporting the carried checkpoint, so a menu opened during an autosave still shows the slot being written (with **Autosave Slot Count** 0, the profile's only slot).
-- A save into the current slot that is cut off by map travel or quitting leaves that slot excluded until the next completed addon save into it, also after a restart. With **Autosave Slot Count** 0 or 1 that can be the profile's newest autosave; use 2 or more if an earlier autosave must always remain selectable.
-- A successful, fully committed addon replacement clears the exclusion; successful cleanup deletion clears it too. Cancellation or returning to the previous slot does not clear it. Direct EMS calls are not restricted and do not clear the exclusion.
-- After a crash, or when EMS refused to switch back, the next start returns to the previous save if the current user and slot still match, then deletes the incomplete target. A failed switch is retried on the following start; a failed deletion is reported and the target stays excluded across restarts. The exclusion is independent of the recovery journal, so a partial copy is protected even when the target never became current.
+Save events include a **Reason**: `Manual`, `Checkpoint`, or the Reason you passed to **Request Autosave** (default `Autosave`).
 
 ## Settings
 
+### Project settings
+
 **Project Settings → Easy Multi Save Addons → Autosave and Checkpoints**
 
-| Setting | Default | Meaning |
+| Setting | Default | Purpose |
 | --- | --- | --- |
-| **Enable Autosave** | On | Allows **Request Autosave** and the automatic triggers. Checkpoints work either way. |
+| **Enable Autosave** | On | Allows **Request Autosave** and automatic triggers. Manual saves and checkpoints work either way. |
 | **Save Data Flags** | Player, Level | EMS data the addon saves and loads. |
-| **Excluded Maps** | Empty | Maps where the addon never saves, such as the main menu and loading maps. |
-| **Minimum Time Between Saves** | 5 s | Earlier requests wait. `0` disables it. |
-| **Periodic Autosave Interval** | 0 s | Autosave at this interval. `0` disables it. |
-| **Autosave After Map Load** / **Map Load Autosave Delay** | Off / 1 s | Autosave this long after a map opens. |
-| **Autosave When Leaving Map** | Off | Save just before map travel. |
-| **Autosave Slot Count** | 0 | `0` saves to the profile slot (as in 1.1); `1` reuses one autosave slot; `2`–`10` rotate slots. |
-| **Carried Custom Files** | Empty | Slot-bound custom save files copied into each new save. |
+| **Excluded Maps** | Empty | Maps where the addon never saves, such as menus and loading screens. |
+| **Minimum Time Between Saves** | 5 s | Minimum gap between autosaves. `0` turns it off. Manual saves ignore it. |
+| **Periodic Autosave Interval** | 0 s | Autosave on a timer. `0` turns it off. |
+| **Autosave After Map Load** | Off | Autosave after a map loads, after **Map Load Autosave Delay** (1 s). |
+| **Autosave When Leaving Map** | Off | Save just before normal map travel. Can cause a brief hitch. |
+| **Autosave Slot Count** | 0 | See [Keep several autosaves](#keep-several-autosaves). |
+| **Carried Custom Files** | Empty | EMS custom save files copied into each new addon save. |
 
-**EMS Checkpoint**
+### Checkpoint settings
 
-| Setting | Default | Meaning |
+Select an **EMS Checkpoint** in the level.
+
+| Setting | Default | Purpose |
 | --- | --- | --- |
-| **Activate On Player Overlap** | On | Activate when a player enters the trigger. |
+| **Activate On Player Overlap** | On | Activate when a player pawn enters the trigger. |
 | **Trigger Once** | On | Activate only once until **Reset Checkpoint**. |
-| **Display Name** | Empty | Optional save-menu label, independent of the EMS slot name. |
-| **Checkpoint Slot Name** | Empty | Optional name of the checkpoint's slot, stored lowercase. |
+| **Display Name** | Empty | Label shown in save menus. |
+| **Checkpoint Slot Name** | Empty | Slot for this checkpoint's snapshot. Empty uses the shared default. |

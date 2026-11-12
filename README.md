@@ -1,59 +1,48 @@
 # Easy Multi Save Addons
 
-**Current Version: 1.3.0**
+**Current Version: 1.3.2**
 
-**Easy Multi Save Addons** provide ready-made extensions for more specialized Unreal Engine workflows that would otherwise require project-specific Blueprint logic. They build directly on Easy Multi Save, reusing its save system while keeping the core plugin lean and focused.
+**Easy Multi Save Addons** add ready-made save workflows to Easy Multi Save (EMS) for cases that would otherwise need project-specific Blueprint logic. Each addon uses the normal EMS save system: set it up once, then save and load through EMS as usual.
 
 ## Addons
 
-| Addon | Use it for | Basic use |
+Pick the addon that matches your problem. Each one links to a short guide.
+
+| Addon | Use it for | Start with |
 | --- | --- | --- |
-| **Autosave and Checkpoints** | Automatic and manual saves, save slots, and gameplay checkpoints. | Configure the settings, call **Request Autosave**, or place an **EMS Checkpoint**. |
-| **Actor Spawner** | Runtime actors that must belong to a specific streamed level or World Partition cell. | Place an **EMS Actor Spawner** there and call **Spawn Actor**. |
-| **World Partition Placed Actors** | Placed actors that move freely and follow streaming at their current location. | Author an **EMS World Partition Placed Component** on a placed actor; non-spatial placement is enforced. |
-| **World Partition Runtime Actors** | Runtime actors that should follow World Partition streaming based on their current location. | Call **Spawn World Partition Runtime Actor**. Nothing needs to be placed. |
-| **Geometry Collection** | Saving fractured Chaos Geometry Collection state. | Use an **EMS Geometry Collection Actor**. |
-| **Level Sequence** | Saving Level Sequence playback state. | Use an **EMS Level Sequence Actor**. |
-| **Instance Manager** | Runtime changes to project-owned ISM and HISM instances and to painted Static Mesh Foliage. | Place one **EMS Instance Manager** in the persistent level. |
-| **Physics Streaming Guard** | Keeping a simulating actor from falling out of the world while the geometry under it is streamed out. | Add an **EMS Physics Streaming Guard** component. **EMS Geometry Collection Actor** already has one. |
+| [Autosave and Checkpoints](Docs/AUTOSAVE_CHECKPOINTS.md) | Autosaves, player-named saves, save menus, and checkpoints. | Call **Request Autosave** or **Manual Save**, or place an **EMS Checkpoint**. |
+| [Actor Spawner](Docs/ACTOR_SPAWNER.md) | Runtime actors that belong to one streamed level or World Partition cell. | Place an **EMS Actor Spawner** there and call **Spawn Actor**. |
+| [World Partition Placed Actors](Docs/WORLD_PARTITION_PLACED_ACTORS.md) | Placed actors that move around a World Partition map. | Add an **EMS World Partition Placed Component** to the placed actor. |
+| [World Partition Runtime Actors](Docs/WORLD_PARTITION_RUNTIME_ACTORS.md) | Spawned actors that move around a World Partition map. | Call **Spawn World Partition Runtime Actor**. |
+| [Geometry Collection](Docs/GEOMETRY_COLLECTION.md) | Fractured Chaos Geometry Collections. | Use an **EMS Geometry Collection Actor**. |
+| [Level Sequence](Docs/LEVEL_SEQUENCE.md) | Level Sequence playback position and state. | Use an **EMS Level Sequence Actor**. |
+| [Instanced Meshes and Foliage](Docs/INSTANCED_MESHES_AND_FOLIAGE.md) | Removed, moved, or replaced ISM/HISM instances and painted foliage. | Place one **EMS Instance Manager** in the persistent level. |
+| [Physics Streaming Guard](Docs/PHYSICS_STREAMING_GUARD.md) | Stopping physics actors from falling when the ground under them streams out. | Add an **EMS Physics Streaming Guard** component. |
 
-Save and load normally through EMS after setup.
-
-## Documentation
-
-- [Autosave and Checkpoints](Docs/AUTOSAVE_CHECKPOINTS.md)
-- [Actor Spawner](Docs/ACTOR_SPAWNER.md)
-- [World Partition Placed Actors](Docs/WORLD_PARTITION_PLACED_ACTORS.md)
-- [World Partition Runtime Actors](Docs/WORLD_PARTITION_RUNTIME_ACTORS.md)
-- [Geometry Collection Persistence](Docs/GEOMETRY_COLLECTION.md)
-- [Level Sequence Persistence](Docs/LEVEL_SEQUENCE.md)
-- [Instanced Meshes and Foliage](Docs/INSTANCED_MESHES_AND_FOLIAGE.md)
-- [Physics Streaming Guard](Docs/PHYSICS_STREAMING_GUARD.md)
-
-## Version history
-
-See the [Changelog](Plugins/EmsAddons/CHANGELOG.md) for release notes and recent changes.
+**Physics Streaming Guard** is a gameplay safeguard; it does not save anything itself.
 
 ## Requirements
 
 - Unreal Engine 5.8
-- Easy Multi Save 1.85 or compatible newer release
-- Unreal `GeometryCollectionPlugin`
-
-Easy Multi Save is a separate dependency and is not included.
+- Easy Multi Save 1.85 or newer (sold separately). With World Partition or level streaming, **Autosave and Checkpoints** needs EMS **1.86** or newer.
+- Unreal's **Geometry Collection** plugin (enabled automatically)
 
 ## Installation
 
-Copy both plugin folders into your project's `Plugins` directory:
+1. Copy both plugin folders into your project's `Plugins` folder:
 
-```text
-<Project>/Plugins/EasyMultiSave/
-<Project>/Plugins/EmsAddons/
-```
+   ```text
+   <Project>/Plugins/EasyMultiSave/
+   <Project>/Plugins/EmsAddons/
+   ```
 
-Enable **Easy Multi Save** and **EMSAddons** in the Unreal Engine plugin settings if they are not already enabled, then restart the editor if requested.
+2. In **Edit → Plugins**, enable **Easy Multi Save** and **Easy Multi Save Addons**, then restart the editor if asked.
 
-For development from this repository, copy your licensed EMS installation to `Plugins/EasyMultiSave/` and open `EMSAddonsDev.uproject`. Unreal will normally offer to build or rebuild the required modules automatically. If needed, regenerate the project files and build the editor target manually.
+**Working from this repository:** copy your licensed EMS into `Plugins/EasyMultiSave/` and open `EMSAddonsDev.uproject`. Unreal offers to build the modules; if it doesn't, regenerate project files and build the editor target.
+
+## Version history
+
+See the [Changelog](Plugins/EmsAddons/CHANGELOG.md).
 
 ## License
 

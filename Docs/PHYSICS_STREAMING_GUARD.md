@@ -1,28 +1,30 @@
 # Physics Streaming Guard
 
-Use **EMS Physics Streaming Guard** to prevent a simulating actor from falling through missing geometry when its supporting streamed level or World Partition cell unloads.
+Use **EMS Physics Streaming Guard** to stop a simulating physics actor from falling through the world when the level or World Partition cell under it streams out.
 
-## Basic use
+## Quick start
 
-1. Add an **EMS Physics Streaming Guard** component to an actor with simulating physics components.
-2. No additional configuration is required.
+Add an **EMS Physics Streaming Guard** component to an actor with simulating physics. No setup is needed.
 
-**EMS Geometry Collection Actor** already includes this component.
+**EMS Geometry Collection Actor** already includes one.
+
+## How it works
+
+- When the ground under the actor streams out, or hasn't streamed in yet at startup, the guard turns off its gravity and stops it. Normal jumps and falls are not affected.
+- The whole body is checked, so an actor resting partly on a platform or across two cells is held if any of its ground disappears.
+- Gravity returns when ground is back under the actor, or when the area below has finished loading and there is genuinely nothing there, so actors over a real pit still fall.
+- Velocity is not restored after release. Forces and collisions can still move a held actor.
+
+## Good to know
+
+- **Level streaming (not World Partition):** while any sublevel is hidden, the guard can't tell where it is, so held actors stay held until all sublevels are visible. World Partition doesn't have this limit.
+- The guard only prevents falling. It doesn't save anything and works in every net mode.
+- With [World Partition Placed Actors](WORLD_PARTITION_PLACED_ACTORS.md), add the guard in the actor's class (not just on the placed instance) so it exists after the actor is recreated.
 
 ## Blueprint nodes
 
-- **Is Physics Suspended For Streaming** — reports whether the guard is currently holding the actor.
+| Task | Nodes |
+| --- | --- |
+| Check whether the actor is being held | **Is Physics Suspended For Streaming** |
 
-## Important behavior
-
-- The guard acts when supporting streamed geometry is removed or is not yet available at startup. It does not freeze normal jumps, falls, or other gameplay movement.
-- Support is checked under the whole footprint of each simulating component, so a wide body resting partly on a platform, or one resting across two cells, is held when any floor under it streams out.
-- While held, the actor's simulating components have gravity disabled and their velocities cleared; the velocity is not restored afterwards. Physics stays enabled, so forces and collisions can still move a held actor.
-- Gravity returns when support is back under the whole body, or when the world below has finished loading and still holds nothing up, so a body over a pit or past the map edge falls as usual. Support is rechecked every 0.1 seconds while held, so moving onto loaded ground also releases it.
-- **Conventional level streaming:** sublevels have no location to check, so while any sublevel is not visible the body stays held. A guarded actor over a real void can then hang until every sublevel is visible. World Partition is checked by location and has no such limit.
-- The guard only prevents falling. It does **not** save or restore actor state and does not handle replication.
-- For [World Partition Placed Actors](WORLD_PARTITION_PLACED_ACTORS.md), author the guard on the actor class when it must also exist on a recreated actor.
-
-## Settings
-
-**EMS Physics Streaming Guard** has no settings.
+The guard has no settings.

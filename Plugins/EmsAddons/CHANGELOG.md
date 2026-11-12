@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.3.2 - 2026-11-12
+
+### Documentation
+
+- Streamlined all addon guides around a quick start and a short "Good to know" list, with details kept out of the way.
+- **World Partition Placed and Runtime Actors:** EMS **Basic** and **Full** multi-level saving both keep several World Partition maps in one slot. The guides previously named only Full.
+- **README:** EMS 1.86 or newer is required for Autosave and Checkpoints with World Partition or level streaming. The plugin to enable is listed as **Easy Multi Save Addons**.
+
 ## 1.3.0 - 2026-11-12
 
 ### Fixed
