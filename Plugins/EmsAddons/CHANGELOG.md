@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.3.5 - 2026-11-15
+
+### Documentation
+
+- **README:** simplified the Easy Multi Save requirement to 1.85 or newer; Autosave and Checkpoints streaming details remain in its guide.
+
 ## 1.3.4 - 2026-11-15
 
 ### Documentation

@@ -1,6 +1,6 @@
 # Easy Multi Save Addons
 
-**Current Version: 1.3.4**
+**Current Version: 1.3.5**
 
 **Easy Multi Save Addons** add ready-made save workflows to Easy Multi Save (EMS) for cases that would otherwise need project-specific Blueprint logic. Each addon uses the normal EMS save system: set it up once, then save and load through EMS as usual.
 
@@ -24,7 +24,7 @@ Pick the addon that matches your problem. Each one links to a short guide.
 ## Requirements
 
 - Unreal Engine 5.8
-- Easy Multi Save (sold separately): **1.86** or newer recommended, **1.85** minimum. With EMS 1.85, **Autosave and Checkpoints** clears EMS's in-memory streaming data on each addon save in World Partition or level-streaming maps and logs a warning.
+- Easy Multi Save **1.85** or newer
 - Unreal's **Geometry Collection** plugin (enabled automatically)
 
 ## Installation
