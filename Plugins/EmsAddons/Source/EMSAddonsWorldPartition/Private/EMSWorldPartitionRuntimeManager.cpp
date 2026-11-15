@@ -25,6 +25,12 @@ namespace
 		UWorld* World = EMSAddons::HasPersistenceAuthority(Manager) ? Manager->GetWorld() : nullptr;
 		return World ? World->GetSubsystem<UEMSWorldPartitionRuntimeSubsystem>() : nullptr;
 	}
+
+	UEMSWorldPartitionPlacedSubsystem* ResolvePlacedSubsystem(AEMSWorldPartitionRuntimeManager* Manager)
+	{
+		UWorld* World = EMSAddons::HasPersistenceAuthority(Manager) ? Manager->GetWorld() : nullptr;
+		return World ? World->GetSubsystem<UEMSWorldPartitionPlacedSubsystem>() : nullptr;
+	}
 }
 
 AEMSWorldPartitionRuntimeManager::AEMSWorldPartitionRuntimeManager()
@@ -92,8 +98,7 @@ void AEMSWorldPartitionRuntimeManager::ActorPreSave_Implementation()
 			{
 				Subsystem->HandleManagerPreSave(Manager);
 			}
-			if (UEMSWorldPartitionPlacedSubsystem* Placed = EMSAddons::HasPersistenceAuthority(Manager)
-				? Manager->GetWorld()->GetSubsystem<UEMSWorldPartitionPlacedSubsystem>() : nullptr)
+			if (UEMSWorldPartitionPlacedSubsystem* Placed = ResolvePlacedSubsystem(Manager))
 			{
 				Placed->HandleManagerPreSave(Manager);
 			}
@@ -113,9 +118,9 @@ void AEMSWorldPartitionRuntimeManager::ActorPreLoad_Implementation()
 	{
 		Subsystem->HandleManagerPreLoad(this);
 	}
-	if (EMSAddons::HasPersistenceAuthority(this))
+	if (UEMSWorldPartitionPlacedSubsystem* Placed = ResolvePlacedSubsystem(this))
 	{
-		if (UEMSWorldPartitionPlacedSubsystem* Placed = GetWorld()->GetSubsystem<UEMSWorldPartitionPlacedSubsystem>()) Placed->HandleManagerPreLoad(this);
+		Placed->HandleManagerPreLoad(this);
 	}
 }
 
@@ -125,9 +130,9 @@ void AEMSWorldPartitionRuntimeManager::ActorLoaded_Implementation()
 	{
 		Subsystem->HandleManagerLoaded(this);
 	}
-	if (EMSAddons::HasPersistenceAuthority(this))
+	if (UEMSWorldPartitionPlacedSubsystem* Placed = ResolvePlacedSubsystem(this))
 	{
-		if (UEMSWorldPartitionPlacedSubsystem* Placed = GetWorld()->GetSubsystem<UEMSWorldPartitionPlacedSubsystem>()) Placed->HandleManagerLoaded(this);
+		Placed->HandleManagerLoaded(this);
 	}
 	if (bRejectedSaveData)
 	{

@@ -48,6 +48,8 @@ Checkpoint IDs are assigned automatically. Use **Regenerate Checkpoint ID** only
 
 Call **Request Autosave** at meaningful moments, such as finishing an objective. You can also turn on automatic triggers in [Settings](#settings): **Periodic Autosave Interval**, **Autosave After Map Load**, and **Autosave When Leaving Map**.
 
+**Automatic Saves Require Loaded Progress** is on by default. If a profile already has saves, the periodic and after-map-load triggers wait until this session loads or saves that profile. This keeps a freshly opened map from becoming its newest save before Continue has restored progress. After-map-load waits up to 10 seconds, then skips that trigger; the periodic timer resumes after a load or save. New profiles can autosave immediately. The guard tracks the EMS user and profile separately. Turn the setting off if your game intentionally starts fresh in an existing profile and wants these triggers to save immediately. **Request Autosave**, **Manual Save**, checkpoints, and **Autosave When Leaving Map** retain their existing behavior.
+
 Requests wait for blockers, the **Minimum Time Between Saves**, and streaming to finish. Waiting requests can be combined into one save, so **true** means "accepted", not "written". Use the [events](#events) for the outcome.
 
 ### Keep several autosaves
@@ -122,7 +124,7 @@ You can skip this section until you need it.
 **World Partition and level streaming**
 
 - Cells or sublevels streaming in delay waiting saves; they are not canceled.
-- Use EMS **1.86** or newer. With EMS 1.85, each addon save clears EMS's in-memory streaming data, and the addon logs a warning.
+- EMS **1.86** or newer is recommended. With EMS 1.85 (the minimum), each addon save clears EMS's in-memory streaming data, and the addon logs a warning.
 - If **Save Data Flags** leaves out **Level**, the slot has no Level data until a later save includes it.
 
 **Pause menus**
@@ -134,6 +136,8 @@ If the pause interrupted an EMS streaming load, the game briefly unpauses (up to
 **Failed and interrupted saves**
 
 If an addon save fails, the addon hides the incomplete slot from menus and loads and tries to switch back to the previous slot. After a crash mid-save, or if EMS blocked that switch, it tries again on the next start. This is recovery, not a backup: with **Autosave Slot Count** `0` or `1` there may be no earlier save to return to.
+
+Recovery keeps a completed save when its on-disk completion marker matches the journal, and leaves the journal alone while its owning game process is still running. This does not coordinate simultaneous writes: use separate EMS users or save locations for game instances that save concurrently.
 
 Changing the EMS user cancels waiting and running addon saves. Direct EMS calls bypass the addon's incomplete-save filtering.
 
@@ -195,6 +199,7 @@ Save events include a **Reason**: `Manual`, `Checkpoint`, or the Reason you pass
 | **Periodic Autosave Interval** | 0 s | Autosave on a timer. `0` turns it off. |
 | **Autosave After Map Load** | Off | Autosave after a map loads, after **Map Load Autosave Delay** (1 s). |
 | **Autosave When Leaving Map** | Off | Save just before normal map travel. Can cause a brief hitch. |
+| **Automatic Saves Require Loaded Progress** | On | Hold periodic and after-map-load autosaves when the profile has existing saves that this session has neither loaded nor written. |
 | **Autosave Slot Count** | 0 | See [Keep several autosaves](#keep-several-autosaves). |
 | **Carried Custom Files** | Empty | EMS custom save files copied into each new addon save. |
 

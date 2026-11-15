@@ -15,7 +15,12 @@
 #include "Engine/Engine.h"
 #include "Engine/World.h"
 #include "EngineUtils.h"
+#include "EMSSaveSlotMetadata.h"
+#include "HAL/PlatformProcess.h"
 #include "HAL/PlatformTime.h"
+#include "Misc/ConfigCacheIni.h"
+#include "Misc/Guid.h"
+#include "Misc/Paths.h"
 #include "Kismet/GameplayStatics.h"
 #include "TimerManager.h"
 #include "UObject/UObjectGlobals.h"
@@ -28,6 +33,9 @@ namespace
 	const FName MapLoadAutosaveReason(TEXT("MapLoad"));
 	const FName ManualSaveReason(TEXT("Manual"));
 	constexpr float MapLoadAutosaveRetryDelay = 0.1f;
+	/** How long Autosave After Map Load waits for the game to load existing progress. */
+	constexpr double MaxUnloadedProgressWaitSeconds = 10.0;
+	constexpr float UnloadedProgressRetryDelay = 0.25f;
 
 	/** An interrupted save is recovered once per process, by the first game instance. */
 	bool bInterruptedSaveChecked = false;
@@ -684,19 +692,61 @@ void UEMSAutosaveSubsystem::BeginSaveJournal(const FString& TargetSlot, const FS
 	const FString Previous = FSavePaths::ValidateSaveName(PreviousSlot);
 	if (!EMS || Target.IsEmpty() || Target.Equals(Previous, ESearchCase::IgnoreCase))
 	{
-		// Writing the current slot again leaves no other slot to return to.
-		ClearSaveJournal();
+		// Writing the current slot again leaves no other slot to return to. It supersedes a
+		// journal whose owner has exited, but never one another running instance still owns.
+		ClearSaveJournal(EMS && !Target.IsEmpty() && !IsSaveJournalOwnedByAnotherProcess());
 		return;
 	}
 
 	InterruptedSaveUser = EMS->GetCurrentSaveUserName();
 	InterruptedSaveSlot = Target;
 	InterruptedSavePreviousSlot = Previous;
-	SaveConfig();
+	InterruptedSaveId = FGuid::NewGuid().ToString(EGuidFormats::Digits);
+	InterruptedSaveProcessId = static_cast<int32>(FPlatformProcess::GetCurrentProcessId());
+	PersistSaveState();
 }
 
-void UEMSAutosaveSubsystem::ClearSaveJournal()
+void UEMSAutosaveSubsystem::PersistSaveState()
 {
+	if (SaveStateWriteBatchDepth > 0)
+	{
+		bSaveStateWritePending = true;
+		return;
+	}
+	bSaveStateWritePending = false;
+	SaveConfig();
+
+	// The journal only protects a save if it reaches disk. SaveConfig reports nothing, so the
+	// write that opens a journal is read back. Platforms without a persistent config folder
+	// and locked or full disks would otherwise lose the protection without a trace.
+	static bool bReportedUnwrittenState = false;
+	if (bReportedUnwrittenState || InterruptedSaveSlot.IsEmpty())
+	{
+		return;
+	}
+	FConfigFile OnDisk;
+	OnDisk.Read(GetClass()->GetConfigName());
+	FString StoredId;
+	OnDisk.GetString(*GetClass()->GetPathName(), TEXT("InterruptedSaveId"), StoredId);
+	if (!StoredId.Equals(InterruptedSaveId, ESearchCase::IgnoreCase))
+	{
+		bReportedUnwrittenState = true;
+		LogMessage(FString::Printf(
+			TEXT("The save journal could not be written to %s. Saves still work, but a game that ends during a save cannot be recovered automatically on the next start."),
+			*GetClass()->GetConfigName()), true);
+	}
+}
+
+void UEMSAutosaveSubsystem::ClearSaveJournal(const bool bAllowForeignOwner)
+{
+	// A second instance may have read the owner's journal at startup. Its idle
+	// shutdown/reset never owns that journal, even if the owner has since died.
+	// Only completed recovery or a new save can retire a foreign journal.
+	if (!bAllowForeignOwner && InterruptedSaveProcessId != 0
+		&& static_cast<uint32>(InterruptedSaveProcessId) != FPlatformProcess::GetCurrentProcessId())
+	{
+		return;
+	}
 	if (InterruptedSaveSlot.IsEmpty() && InterruptedSavePreviousSlot.IsEmpty() && InterruptedSaveUser.IsEmpty())
 	{
 		return;
@@ -704,7 +754,9 @@ void UEMSAutosaveSubsystem::ClearSaveJournal()
 	InterruptedSaveUser.Reset();
 	InterruptedSaveSlot.Reset();
 	InterruptedSavePreviousSlot.Reset();
-	SaveConfig();
+	InterruptedSaveId.Reset();
+	InterruptedSaveProcessId = 0;
+	PersistSaveState();
 }
 
 void UEMSAutosaveSubsystem::ClearJournalCompletedBy(const FString& SavedSlot, const ESaveGameMode Mode)
@@ -733,8 +785,19 @@ void UEMSAutosaveSubsystem::ClearJournalCompletedBy(const FString& SavedSlot, co
 		&& FSavePaths::ValidateSaveName(SavedSlot).Equals(InterruptedSaveSlot, ESearchCase::IgnoreCase)
 		&& EMS->GetCurrentSaveUserName().Equals(InterruptedSaveUser, ESearchCase::IgnoreCase))
 	{
-		ClearSaveJournal();
+		ClearSaveJournal(true);
 	}
+}
+
+bool UEMSAutosaveSubsystem::IsSaveJournalOwnedByAnotherProcess() const
+{
+	// A process id can be reused after exit; only this executable counts as an owner.
+	const uint32 JournalProcess = static_cast<uint32>(InterruptedSaveProcessId);
+	return JournalProcess != 0
+		&& JournalProcess != FPlatformProcess::GetCurrentProcessId()
+		&& FPlatformProcess::IsApplicationRunning(JournalProcess)
+		&& FPaths::GetBaseFilename(FPlatformProcess::GetApplicationName(JournalProcess)).Equals(
+			FPaths::GetBaseFilename(FPlatformProcess::ExecutableName(false)), ESearchCase::IgnoreCase);
 }
 
 bool UEMSAutosaveSubsystem::RecoverInterruptedSave()
@@ -744,6 +807,7 @@ bool UEMSAutosaveSubsystem::RecoverInterruptedSave()
 	const FString User = InterruptedSaveUser;
 	const FString Slot = InterruptedSaveSlot;
 	const FString Previous = InterruptedSavePreviousSlot;
+	const FString SaveId = InterruptedSaveId;
 	if (Slot.IsEmpty())
 	{
 		return false;
@@ -753,13 +817,40 @@ bool UEMSAutosaveSubsystem::RecoverInterruptedSave()
 	{
 		return false;
 	}
+
+	// Another running instance of the game wrote this journal and may still be saving.
+	// Its slot is not interrupted; that instance clears the journal itself.
+	if (IsSaveJournalOwnedByAnotherProcess())
+	{
+		LogMessage(FString::Printf(TEXT("The save journal of %s belongs to another running instance of the game and was left alone."), *Slot));
+		return false;
+	}
 	if (!EMS->GetCurrentSaveUserName().Equals(User, ESearchCase::IgnoreCase)
 		|| !EMS->GetCurrentSaveGameName().Equals(Slot, ESearchCase::IgnoreCase))
 	{
 		// The game already moved on to another slot or user; the journal no longer applies.
-		ClearSaveJournal();
+		ClearSaveJournal(true);
 		return false;
 	}
+	// The slot's metadata is the last write of a save and repeats the journal's id. A match
+	// proves the save completed and only the journal's own removal was lost, so the slot
+	// holds the newest progress and must be kept.
+	const FString& MetadataFile = GetDefault<UEMSSaveSlotMetadata>()->SaveGameName;
+	if (!SaveId.IsEmpty()
+		&& !Slot.Equals(ActiveSaveSlot, ESearchCase::IgnoreCase)
+		&& EMS->DoesCustomSaveExist(Slot, MetadataFile))
+	{
+		const UEMSSaveSlotMetadata* Metadata = Cast<UEMSSaveSlotMetadata>(
+			EMS->GetCustomSave(UEMSSaveSlotMetadata::StaticClass(), Slot, FString(), false));
+		if (Metadata && Metadata->CompletedSaveId.Equals(SaveId, ESearchCase::IgnoreCase))
+		{
+			SetSlotUnavailable(Slot, false);
+			ClearSaveJournal(true);
+			LogMessage(FString::Printf(TEXT("The save journal of %s was stale: that save had completed. The slot is kept."), *Slot));
+			return false;
+		}
+	}
+
 	// Recovery declares this target incomplete, also for a reservation this instance still holds.
 	if (Slot.Equals(ActiveSaveSlot, ESearchCase::IgnoreCase))
 	{
@@ -785,7 +876,7 @@ bool UEMSAutosaveSubsystem::RecoverInterruptedSave()
 	EMS->DeleteAllSaveDataForSlot(Slot);
 	const bool bDeleted = !DoesSaveSlotRemain(Slot);
 	SetSlotUnavailable(Slot, !bDeleted);
-	ClearSaveJournal();
+	ClearSaveJournal(true);
 	LogMessage(FString::Printf(TEXT("The game ended while saving %s. Continuing from %s; the incomplete save %s."),
 		*Slot, *Previous, bDeleted ? TEXT("was deleted") : TEXT("could not be deleted and remains unavailable across restarts")), true);
 	return true;
@@ -867,27 +958,56 @@ void UEMSAutosaveSubsystem::HandleSaveCompleted()
 		return;
 	}
 
-	// Keep the interrupted-save journal until the snapshot's label is durable too.
-	// A metadata failure must not expose an overwritten save with its old label.
-	if (!HasWrittenActiveSlotInfo() || !WriteSaveSlotMetadata(CompletedSlot, CompletedDisplayName, CompletedSaveType))
+	// Metadata is the completion proof recovery reads from disk. Write it only after
+	// the checkpoint record is durable too, or a failed commit could look complete
+	// after a crash (or when EMS refuses the rollback to the previous slot).
+	bool bCommitted = HasWrittenActiveSlotInfo();
+	UEMSCheckpointSaveGame* CommittedCheckpointSave = nullptr;
+	bool bPreviousHasCheckpoint = false;
+	FEMSCheckpointRecord PreviousCheckpointRecord;
+	FGuid PreviousSaveGeneration;
+	FGuid PreviousCheckpointGeneration;
+	if (bCommitted && bCheckpointSave)
 	{
-		// When EMS refuses the switch back, the journal kept here must survive EMS's success broadcast.
-		bNextActorsSavedIsFailedAddonSave = true;
-		ResetActiveSaveState(ReturnAndDiscardFailedSave(PreviousSlot, CompletedSlot));
-		if (CompletedActor.IsValid())
+		UEMSCheckpointSaveGame* CheckpointSave = ResolveCheckpointSave(CompletedSlot);
+		if (CheckpointSave)
 		{
-			CompletedActor->MarkActivationFailed();
+			bPreviousHasCheckpoint = CheckpointSave->bHasCheckpoint;
+			PreviousCheckpointRecord = CheckpointSave->LatestCheckpoint;
+			PreviousSaveGeneration = CheckpointSave->SaveGeneration;
+			PreviousCheckpointGeneration = CheckpointSave->CheckpointGeneration;
 		}
-		bPausedOperationFailureReported |= bRunningPausedOperation;
-		OnAutosaveFailed.Broadcast(CompletedReason);
-		return;
+		bCommitted = CommitCheckpoint(CompletedCheckpoint, CompletedSlot);
+		CommittedCheckpointSave = bCommitted ? CheckpointSave : nullptr;
 	}
-	const bool bCommitted = !bCheckpointSave || CommitCheckpoint(CompletedCheckpoint, CompletedSlot);
+	bCommitted = bCommitted && WriteSaveSlotMetadata(CompletedSlot, CompletedDisplayName, CompletedSaveType, true);
+	if (!bCommitted && CommittedCheckpointSave)
+	{
+		// The record is durable but the save is not complete. When EMS refuses the return to
+		// the previous slot, later saves would carry this failed checkpoint along instead of
+		// the progress's real one, so the record written above is undone.
+		CommittedCheckpointSave->bHasCheckpoint = bPreviousHasCheckpoint;
+		CommittedCheckpointSave->LatestCheckpoint = PreviousCheckpointRecord;
+		CommittedCheckpointSave->SaveGeneration = PreviousSaveGeneration;
+		CommittedCheckpointSave->CheckpointGeneration = PreviousCheckpointGeneration;
+		if (!EMS->SaveCustom(CommittedCheckpointSave))
+		{
+			LogMessage(TEXT("The incomplete checkpoint's record could not be reverted on disk; its slot stays unavailable."), true);
+		}
+	}
 	if (bCommitted)
 	{
+		// The exclusion and the journal end together; one config write covers both.
+		++SaveStateWriteBatchDepth;
 		SetSlotUnavailable(CompletedSlot, false);
 		ResetActiveSaveState();
+		--SaveStateWriteBatchDepth;
+		if (bSaveStateWritePending && SaveStateWriteBatchDepth == 0)
+		{
+			PersistSaveState();
+		}
 		LastSuccessfulSaveSeconds = FPlatformTime::Seconds();
+		MarkSessionProgressCurrent();
 		if (bCheckpointSave)
 		{
 			// UEMSAsyncSaveGame broadcasts OnActorsSaved immediately after this node
@@ -1338,12 +1458,43 @@ void UEMSAutosaveSubsystem::HandleEMSPlayerLoaded(const APlayerController* Loade
 {
 	if (LoadedPlayer)
 	{
+		MarkSessionProgressCurrent();
 		CancelPendingRequestAfterEMSLoad();
 	}
 }
 
+void UEMSAutosaveSubsystem::MarkSessionProgressCurrent()
+{
+	if (const UEMSObject* EMS = UEMSObject::Get(this))
+	{
+		SessionProgressUser = EMS->GetCurrentSaveUserName();
+		SessionProgressProfile = GetSaveProfile();
+	}
+}
+
+bool UEMSAutosaveSubsystem::WouldOverwriteUnloadedProgress()
+{
+	const UEMSAutosaveSettings* Settings = GetDefault<UEMSAutosaveSettings>();
+	const UEMSObject* EMS = UEMSObject::Get(this);
+	if (!Settings || !Settings->bAutomaticSavesRequireLoadedProgress || !EMS)
+	{
+		return false;
+	}
+	const FString Profile = GetSaveProfile();
+	if (Profile.IsEmpty()
+		|| (Profile.Equals(SessionProgressProfile, ESearchCase::IgnoreCase)
+			&& EMS->GetCurrentSaveUserName().Equals(SessionProgressUser, ESearchCase::IgnoreCase)))
+	{
+		return false;
+	}
+	// Saved progress exists that this session has neither loaded nor written. An automatic
+	// save now would store the freshly opened map as the newest save of that profile.
+	return EMS->DoesSaveSlotExist(EMS->GetCurrentSaveGameName()) || !GetSaveSlots().IsEmpty();
+}
+
 void UEMSAutosaveSubsystem::HandleEMSLevelLoaded(const TArray<TSoftObjectPtr<AActor>>& LoadedActors)
 {
+	MarkSessionProgressCurrent();
 	CancelPendingRequestAfterEMSLoad();
 }
 
@@ -1371,6 +1522,7 @@ void UEMSAutosaveSubsystem::HandleEMSActorsSaved(ESaveGameMode Mode, bool bSucce
 	}
 
 	LastSuccessfulSaveSeconds = FPlatformTime::Seconds();
+	MarkSessionProgressCurrent();
 	ClearJournalCompletedBy(SavedSlot, Mode);
 	if (bIgnoreNextSuccessfulActorsSaved)
 	{
@@ -1578,6 +1730,7 @@ void UEMSAutosaveSubsystem::ConfigureWorldTimers(UWorld* World)
 
 	World->GetTimerManager().ClearTimer(PeriodicTimer);
 	World->GetTimerManager().ClearTimer(MapLoadTimer);
+	MapLoadAutosaveWaitStartSeconds = -1.0;
 	// Menu and loading maps never save, so their automatic triggers are not armed at all.
 	if (Settings->IsMapExcluded(World))
 	{
@@ -1599,6 +1752,15 @@ void UEMSAutosaveSubsystem::ConfigureWorldTimers(UWorld* World)
 
 void UEMSAutosaveSubsystem::HandlePeriodicAutosave()
 {
+	if (WouldOverwriteUnloadedProgress())
+	{
+		if (!bReportedUnloadedProgressSkip)
+		{
+			bReportedUnloadedProgressSkip = true;
+			LogMessage(TEXT("Periodic autosave skipped: this profile has saved progress that has not been loaded in this session. It resumes after the first load or save. See Automatic Saves Require Loaded Progress."), true);
+		}
+		return;
+	}
 	RequestAutosave(PeriodicAutosaveReason);
 }
 
@@ -1626,6 +1788,31 @@ void UEMSAutosaveSubsystem::HandleMapLoadAutosave()
 			false);
 		return;
 	}
+
+	// The game's own load usually starts within Begin Play, but may be a few frames or a
+	// menu choice away. Wait for it briefly instead of saving the unloaded map over it.
+	if (WouldOverwriteUnloadedProgress())
+	{
+		const double Now = FPlatformTime::Seconds();
+		if (MapLoadAutosaveWaitStartSeconds < 0.0)
+		{
+			MapLoadAutosaveWaitStartSeconds = Now;
+		}
+		if (Now - MapLoadAutosaveWaitStartSeconds < MaxUnloadedProgressWaitSeconds)
+		{
+			World->GetTimerManager().SetTimer(
+				MapLoadTimer,
+				this,
+				&UEMSAutosaveSubsystem::HandleMapLoadAutosave,
+				UnloadedProgressRetryDelay,
+				false);
+			return;
+		}
+		MapLoadAutosaveWaitStartSeconds = -1.0;
+		LogMessage(TEXT("Autosave After Map Load skipped: this profile has saved progress that has not been loaded in this session. See Automatic Saves Require Loaded Progress."), true);
+		return;
+	}
+	MapLoadAutosaveWaitStartSeconds = -1.0;
 
 	RequestAutosave(MapLoadAutosaveReason);
 }

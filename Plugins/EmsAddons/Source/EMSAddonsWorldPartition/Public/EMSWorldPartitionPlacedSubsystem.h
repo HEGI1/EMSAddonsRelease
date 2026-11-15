@@ -40,6 +40,17 @@ public:
 	UFUNCTION(BlueprintCallable, Category = "EMS Addons|World Partition Placed Actors")
 	TArray<AActor*> GetManagedPlacedActors() const;
 
+	/**
+	 * True while Actor's authored state is being read at map start.
+	 *
+	 * That read runs the actor's EMS Actor Pre Save and Actor Saved events before its
+	 * Begin Play, so the saved defaults are what the map authored rather than what
+	 * Begin Play made of them. Save events that depend on Begin Play state can check
+	 * this and skip that part.
+	 */
+	UFUNCTION(BlueprintPure, Category = "EMS Addons|World Partition Placed Actors")
+	bool IsCapturingAuthoredDefaults(const AActor* Actor) const { return Actor && BaselineCaptureActor == Actor; }
+
 	void Reconcile();
 
 #if WITH_DEV_AUTOMATION_TESTS
@@ -73,6 +84,7 @@ private:
 	bool bDeinitializing = false;
 	bool bInternalRemoval = false;
 	AActor* InternalRemovalActor = nullptr;
+	AActor* BaselineCaptureActor = nullptr;
 	bool bRestoringActor = false;
 	bool bLoading = false;
 	bool bPendingLoadReset = false;

@@ -280,7 +280,8 @@ bool UEMSAutosaveSubsystem::GetSaveSlotDetails(const FString& SlotName, FEMSSave
 }
 
 bool UEMSAutosaveSubsystem::WriteSaveSlotMetadata(
-	const FString& SlotName, const FText& DisplayName, const EEMSSaveSlotType SaveType)
+	const FString& SlotName, const FText& DisplayName, const EEMSSaveSlotType SaveType,
+	const bool bMarkJournaledSaveComplete)
 {
 	UEMSObject* EMS = UEMSObject::Get(this);
 	UEMSSaveSlotMetadata* Metadata = EMS ? Cast<UEMSSaveSlotMetadata>(
@@ -292,8 +293,17 @@ bool UEMSAutosaveSubsystem::WriteSaveSlotMetadata(
 	}
 	const FText PreviousName = Metadata->DisplayName;
 	const EEMSSaveSlotType PreviousType = Metadata->SaveType;
+	const FString PreviousSaveId = Metadata->CompletedSaveId;
 	Metadata->DisplayName = DisplayName.IsEmptyOrWhitespace() ? FText() : DisplayName;
 	Metadata->SaveType = SaveType;
+	if (bMarkJournaledSaveComplete
+		&& !InterruptedSaveId.IsEmpty()
+		&& InterruptedSaveSlot.Equals(FSavePaths::ValidateSaveName(SlotName), ESearchCase::IgnoreCase))
+	{
+		// This write is the last one of the save. Recovery reads it as proof of completion,
+		// so a journal that could not be cleared afterwards never deletes this slot.
+		Metadata->CompletedSaveId = InterruptedSaveId;
+	}
 	// SaveCustom normally stamps Slot Info too. A label edit must not move an old
 	// save to the front of the menu or change which autosave rotation replaces.
 	// Hold EMS's redundant-write throttle for this metadata-only operation.
@@ -302,6 +312,7 @@ bool UEMSAutosaveSubsystem::WriteSaveSlotMetadata(
 	{
 		Metadata->DisplayName = PreviousName;
 		Metadata->SaveType = PreviousType;
+		Metadata->CompletedSaveId = PreviousSaveId;
 		LogMessage(TEXT("The save slot's display metadata could not be written."), true);
 		return false;
 	}
@@ -663,7 +674,7 @@ void UEMSAutosaveSubsystem::SetSlotUnavailable(const FString& SlotName, const bo
 	{
 		if (UnavailableSlots.RemoveAll(Matches) == 0) return;
 	}
-	SaveConfig();
+	PersistSaveState();
 }
 
 bool UEMSAutosaveSubsystem::PreflightCarriedCustomFiles(const FString& SourceSlot, const FString& TargetSlot,

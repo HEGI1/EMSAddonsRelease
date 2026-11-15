@@ -187,6 +187,9 @@ protected:
 	/** Marks a source created by live gameplay as settled in the current world. */
 	void MarkSourceRestored(const FEMSInstanceSourceId& SourceId);
 
+	/** For a subclass that changes instances itself: cached instance keys are dropped at once. */
+	void InvalidateInstanceKeys() { InvalidateInstanceKeyCaches(); }
+
 	/**
 	 * Captures the current delta for every loaded source.
 	 *
@@ -352,6 +355,41 @@ private:
 		TArray<EMSAddons::Instances::FCanonicalTransform> CanonicalByRuntimeIndex;
 		TArray<FEMSInstanceKey> KeysByRuntimeIndex;
 	};
+
+	/**
+	 * What a source looked like when its delta was last captured and committed.
+	 *
+	 * A save rebuilds, sorts and diffs every instance of every loaded source. Most
+	 * sources do not change between two saves, and one pass over their raw buffers
+	 * proves that far more cheaply, so their committed delta is kept as it is.
+	 */
+	struct FCaptureStamp
+	{
+		FObjectKey Component;
+		uint64 BufferHash = 0;
+		uint64 BaselineSignature = 0;
+		int32 BaselineCount = 0;
+		int32 InstanceCount = 0;
+		int32 CustomDataFloatCount = 0;
+		FTransform ComponentTransform = FTransform::Identity;
+
+		bool Matches(const FCaptureStamp& Other) const
+		{
+			return Component == Other.Component
+				&& BufferHash == Other.BufferHash
+				&& BaselineSignature == Other.BaselineSignature
+				&& BaselineCount == Other.BaselineCount
+				&& InstanceCount == Other.InstanceCount
+				&& CustomDataFloatCount == Other.CustomDataFloatCount
+				&& ComponentTransform.Equals(Other.ComponentTransform, 0.0);
+		}
+	};
+	static FCaptureStamp MakeCaptureStamp(
+		const UInstancedStaticMeshComponent* Component,
+		const FResolvedSourceState& Baseline,
+		bool bWorldSpace);
+	/** Dropped for a source whenever its gameplay data changes, which no buffer shows. */
+	TMap<FEMSInstanceSourceId, FCaptureStamp> CaptureStamps;
 
 	static constexpr int32 MaxSourceDeltas = 4096;
 	static constexpr int32 MaxTotalChangedInstances = 500000;

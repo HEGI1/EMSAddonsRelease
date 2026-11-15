@@ -20,4 +20,13 @@ public:
 
 	UPROPERTY(SaveGame)
 	EEMSSaveSlotType SaveType = EEMSSaveSlotType::Autosave;
+
+	/**
+	 * Id of the last addon save that finished writing this slot.
+	 *
+	 * The metadata is the final write of a save. A recovery journal naming the same
+	 * id therefore describes a save that completed, whatever the journal itself says.
+	 */
+	UPROPERTY(SaveGame)
+	FString CompletedSaveId;
 };

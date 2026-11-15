@@ -421,6 +421,7 @@ void AEMSInstancedSourceManager::ForgetSource(
 {
 	RestoredSources.Remove(SourceId);
 	FailedRestoreSources.Remove(SourceId);
+	CaptureStamps.Remove(SourceId);
 }
 
 AEMSInstancedSourceManager::FResolvedSourceState
@@ -617,6 +618,15 @@ void AEMSInstancedSourceManager::RefreshLoadedSources()
 			It.RemoveCurrent();
 		}
 	}
+	// Stamps describe a particular live component, unlike changed-source baselines
+	// which must survive streaming. Do not accumulate them for every visited cell.
+	for (auto It = CaptureStamps.CreateIterator(); It; ++It)
+	{
+		if (!LoadedSources.Contains(It.Key()) || AmbiguousSources.Contains(It.Key()))
+		{
+			It.RemoveCurrent();
+		}
+	}
 	for (auto It = RestoredSources.CreateIterator(); It; ++It)
 	{
 		const TWeakObjectPtr<UInstancedStaticMeshComponent>* Loaded =
@@ -674,6 +684,34 @@ void AEMSInstancedSourceManager::EnsureSourceBaselines()
 					UsesWorldSpaceTransforms(Pair.Key)));
 		}
 	}
+}
+
+AEMSInstancedSourceManager::FCaptureStamp AEMSInstancedSourceManager::MakeCaptureStamp(
+	const UInstancedStaticMeshComponent* Component,
+	const FResolvedSourceState& Baseline,
+	const bool bWorldSpace)
+{
+	FCaptureStamp Stamp;
+	Stamp.Component = FObjectKey(Component);
+	Stamp.BaselineSignature = Baseline.BaselineSignature;
+	Stamp.BaselineCount = Baseline.Instances.Num();
+	Stamp.InstanceCount = Component->GetInstanceCount();
+	Stamp.CustomDataFloatCount = Component->NumCustomDataFloats;
+	// World-space keys move with the component even when no instance changes.
+	Stamp.ComponentTransform = bWorldSpace
+		? Component->GetComponentTransform()
+		: FTransform::Identity;
+
+	FXxHash64Builder Hash;
+	Hash.Update(
+		Component->PerInstanceSMData.GetData(),
+		static_cast<uint64>(Component->PerInstanceSMData.Num())
+			* sizeof(FInstancedStaticMeshInstanceData));
+	Hash.Update(
+		Component->PerInstanceSMCustomData.GetData(),
+		static_cast<uint64>(Component->PerInstanceSMCustomData.Num()) * sizeof(float));
+	Stamp.BufferHash = Hash.Finalize().Hash;
+	return Stamp;
 }
 
 FEMSInstanceSourceDelta AEMSInstancedSourceManager::BuildDelta(
@@ -806,6 +844,7 @@ bool AEMSInstancedSourceManager::CaptureDeltas(const ULevel* OnlyLevel)
 	int64 TotalChanges = 0;
 	TArray<FEMSInstanceSourceId> CapturedSources;
 	TArray<FEMSInstanceSourceId> ReplacedRejectedSources;
+	TMap<FEMSInstanceSourceId, FCaptureStamp> NewStamps;
 	for (const TPair<
 		FEMSInstanceSourceId,
 		TWeakObjectPtr<UInstancedStaticMeshComponent>>& Pair : LoadedSources)
@@ -855,6 +894,19 @@ bool AEMSInstancedSourceManager::CaptureDeltas(const ULevel* OnlyLevel)
 				LOCTEXT(
 					"InvalidInstancedBaseline",
 					"The source baseline is unavailable or has invalid instance data."));
+			continue;
+		}
+
+		// Unchanged since its delta was last committed: that delta, or the absence
+		// of one, still describes it, so the full resolve and diff are skipped.
+		FCaptureStamp Stamp = MakeCaptureStamp(
+			Component,
+			*Baseline,
+			UsesWorldSpaceTransforms(Pair.Key));
+		if (const FCaptureStamp* Committed = CaptureStamps.Find(Pair.Key);
+			Committed && Committed->Matches(Stamp))
+		{
+			CapturedSources.Add(Pair.Key);
 			continue;
 		}
 
@@ -911,6 +963,8 @@ bool AEMSInstancedSourceManager::CaptureDeltas(const ULevel* OnlyLevel)
 			MergedDeltas.Add(Pair.Key, MoveTemp(Delta));
 		}
 		CapturedSources.Add(Pair.Key);
+		// Recorded only once this pass commits; a refused capture keeps the old deltas.
+		NewStamps.Add(Pair.Key, MoveTemp(Stamp));
 	}
 
 	if (MergedDeltas.Num() > MaxSourceDeltas)
@@ -1000,6 +1054,10 @@ bool AEMSInstancedSourceManager::CaptureDeltas(const ULevel* OnlyLevel)
 	{
 		RestoredSources.Add(SourceId);
 		FailedRestoreSources.Remove(SourceId);
+	}
+	for (TPair<FEMSInstanceSourceId, FCaptureStamp>& Stamp : NewStamps)
+	{
+		CaptureStamps.Add(Stamp.Key, MoveTemp(Stamp.Value));
 	}
 	for (const FEMSInstanceSourceId& SourceId : ReplacedRejectedSources)
 	{
@@ -1483,6 +1541,7 @@ void AEMSInstancedSourceManager::RebuildGameplayData(
 	const FResolvedSourceState& Verified)
 {
 	LiveGameplayData.Remove(SourceId);
+	CaptureStamps.Remove(SourceId);
 	if (Target.Instances.Num() != Verified.Instances.Num())
 	{
 		return;
@@ -1863,6 +1922,7 @@ void AEMSInstancedSourceManager::ActorPreLoad_Implementation()
 	RestoredSources.Reset();
 	FailedRestoreSources.Reset();
 	LiveGameplayData.Reset();
+	CaptureStamps.Reset();
 	bHadSkippedRestoreSource = false;
 	bRestorePending = true;
 	LastRestoreResult = FEMSAddonResult(
@@ -1936,6 +1996,10 @@ AEMSInstancedSourceManager::GetInstanceKeyCache(
 
 	const FObjectKey ComponentKey(Component);
 	const int32 InstanceCount = Component->GetInstanceCount();
+	const FTransform ComponentTransform = bWorldSpace
+		? Component->GetComponentTransform()
+		: FTransform::Identity;
+
 	// ISM/HISM exposes no transform-change revision. Hash the complete layout:
 	// another instance can change this one's duplicate ordinal without changing
 	// its transform or the count. Unchanged lookups avoid decomposition/sorting.
@@ -1943,9 +2007,6 @@ AEMSInstancedSourceManager::GetInstanceKeyCache(
 		Component->PerInstanceSMData.GetData(),
 		static_cast<uint64>(Component->PerInstanceSMData.Num())
 			* sizeof(FInstancedStaticMeshInstanceData)).Hash;
-	const FTransform ComponentTransform = bWorldSpace
-		? Component->GetComponentTransform()
-		: FTransform::Identity;
 	if (const FInstanceKeyCache* Cached = InstanceKeyCaches.Find(ComponentKey);
 		Cached
 		&& Cached->InstanceCount == InstanceCount
@@ -2155,6 +2216,10 @@ bool AEMSInstancedSourceManager::WriteInstanceGameplayData(
 	{
 		return false;
 	}
+
+	// Gameplay data lives beside the instance buffers, so the next capture has to
+	// look at this source again even though those buffers did not change.
+	CaptureStamps.Remove(SourceId);
 
 	if (Candidate.IsEmpty())
 	{

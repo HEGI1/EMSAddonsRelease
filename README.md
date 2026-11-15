@@ -1,6 +1,6 @@
 # Easy Multi Save Addons
 
-**Current Version: 1.3.2**
+**Current Version: 1.3.4**
 
 **Easy Multi Save Addons** add ready-made save workflows to Easy Multi Save (EMS) for cases that would otherwise need project-specific Blueprint logic. Each addon uses the normal EMS save system: set it up once, then save and load through EMS as usual.
 
@@ -17,14 +17,14 @@ Pick the addon that matches your problem. Each one links to a short guide.
 | [Geometry Collection](Docs/GEOMETRY_COLLECTION.md) | Fractured Chaos Geometry Collections. | Use an **EMS Geometry Collection Actor**. |
 | [Level Sequence](Docs/LEVEL_SEQUENCE.md) | Level Sequence playback position and state. | Use an **EMS Level Sequence Actor**. |
 | [Instanced Meshes and Foliage](Docs/INSTANCED_MESHES_AND_FOLIAGE.md) | Removed, moved, or replaced ISM/HISM instances and painted foliage. | Place one **EMS Instance Manager** in the persistent level. |
-| [Physics Streaming Guard](Docs/PHYSICS_STREAMING_GUARD.md) | Stopping physics actors from falling when the ground under them streams out. | Add an **EMS Physics Streaming Guard** component. |
+| [Physics Streaming Guard](Docs/PHYSICS_STREAMING_GUARD.md) | Stopping players, characters and physics actors from falling through ground that hasn't streamed in. | Automatic for players and AI characters; add an **EMS Physics Streaming Guard** component to physics actors. |
 
 **Physics Streaming Guard** is a gameplay safeguard; it does not save anything itself.
 
 ## Requirements
 
 - Unreal Engine 5.8
-- Easy Multi Save 1.85 or newer (sold separately). With World Partition or level streaming, **Autosave and Checkpoints** needs EMS **1.86** or newer.
+- Easy Multi Save (sold separately): **1.86** or newer recommended, **1.85** minimum. With EMS 1.85, **Autosave and Checkpoints** clears EMS's in-memory streaming data on each addon save in World Partition or level-streaming maps and logs a warning.
 - Unreal's **Geometry Collection** plugin (enabled automatically)
 
 ## Installation

@@ -123,7 +123,7 @@ bool UEMSAutosaveSubsystem::CompleteSynchronousAutosave(
 		&& HasWrittenActiveSlotInfo();
 	if (bSuccess)
 	{
-		bSuccess = WriteSaveSlotMetadata(CompletedSlot, ActiveDisplayName, ActiveSaveType);
+		bSuccess = WriteSaveSlotMetadata(CompletedSlot, ActiveDisplayName, ActiveSaveType, true);
 	}
 	const bool bClearJournal = bSuccess || ReturnAndDiscardFailedSave(ActivePreviousSlot, CompletedSlot);
 

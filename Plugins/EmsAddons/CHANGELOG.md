@@ -1,5 +1,46 @@
 # Changelog
 
+## 1.3.4 - 2026-11-15
+
+### Documentation
+
+- **README:** Easy Multi Save 1.86 or newer is recommended; 1.85 is the minimum.
+- **World Partition Placed Actors:** documented **Is Capturing Authored Defaults**.
+- **Autosave and Checkpoints:** clarified completed-save recovery and the limit on concurrent game-instance writes.
+- **Geometry Collection:** clarified restore retries and simulation being disabled after an unrecoverable physics synchronization failure.
+
+### Added
+
+- **Physics Streaming Guard:** characters are now held too. Their Character Movement is set to None while the ground under them is unloaded and restored afterwards. This only happens where movement is authoritative (standalone or server). An AI's active **Move To** is paused for the hold and resumed afterwards. A character standing on a walkable floor counts as supported, ledges included.
+- **Physics Streaming Guard:** player pawns and AI-possessed Characters receive a guard automatically. Project setting: **Easy Multi Save Addons > Physics Streaming Guard** (**Guard Player Pawns**, **Guard AI Characters**, both on by default).
+- **Physics Streaming Guard:** **Reevaluate Streaming Support** Blueprint node.
+- **Autosave and Checkpoints:** **Automatic Saves Require Loaded Progress** project setting, on by default. The periodic and after-map-load triggers wait while the profile has saved progress that this game session has neither loaded nor written, so a freshly opened map is not stored as the newest save. Request Autosave, Manual Save and checkpoints are not affected.
+- **World Partition Placed Actors:** **Is Capturing Authored Defaults** node on the placed subsystem. The authored state of a placed actor is read before its Begin Play, which runs its Actor Pre Save and Actor Saved events early; those events can check this node.
+
+### Fixed
+
+- **Physics Streaming Guard:** a walking character moved with `SetActorLocation` (an EMS load, a checkpoint restore) is no longer treated as standing on the floor it left. Character Movement keeps that old floor until it next runs, which on a server for a remote player can be after the check, so the player could fall through a destination that was still streaming in. A floor whose collision has gone no longer counts either.
+- **Physics Streaming Guard:** teleporting an already held actor starts a fresh arrival check and grace period without losing its original gravity flag. Characters switched to Falling by `TeleportTo` are held again at an unloaded destination. Hidden conventional sublevels no longer cause arrival holds to expire while World Partition content is still requested. Blocking support using Vehicle, Pawn, Destructible or custom object channels is now detected too.
+- **Physics Streaming Guard:** the missing-ground check now also runs after a teleport, so an EMS load, a checkpoint restore or a gameplay teleport into an area that is still streaming in no longer drops the actor or player through the world.
+- **Physics Streaming Guard (World Partition):** an actor is no longer released while an unloaded cell still has content below it. Floors larger than their own cell previously counted as loaded once the cells at the actor's location were active.
+- **Physics Streaming Guard (World Partition):** an actor spawned or teleported above a floor that is still streaming in is held even when other ground is loaded far below, instead of falling past the missing floor.
+- **Physics Streaming Guard:** arrival holds also protect against distant ground under missing conventional sublevels, release characters when a narrow ledge returns, and check resting support for each simulating body. Arrival holds waiting for content that is not requested expire after a grace period. With conventional sublevels, an actor arriving in midair over loaded ground is not held when no hidden sublevel is requested to load. Fast movement across a long frame no longer counts as a teleport.
+- **Physics Streaming Guard:** triggers, physics volumes and other overlap-only collision no longer count as ground. An actor or player inside or above a trigger was previously treated as supported and could fall through a floor that was still streaming in, and an actor resting inside a trigger was not held when its floor streamed out. Only collision that blocks the actor counts now.
+- **Physics Streaming Guard (World Partition):** cells streaming out elsewhere no longer hold an actor or player that arrives in midair over a loaded floor. A departing cell only matters where its content lies below the actor.
+- **Physics Streaming Guard (World Partition with sublevels):** a hidden sublevel that nobody requested no longer holds an actor or player arriving in midair over loaded ground for the whole grace period. Once the World Partition cells below are loaded, the actor falls onto that ground right away, as it does in a world with sublevels only.
+- **Physics Streaming Guard:** releasing a held body no longer switches gravity back off when gameplay switched it on during the hold.
+- **Autosave and Checkpoints:** the recovery that runs at game start no longer deletes a save that had in fact completed. Each save now records its id in the slot's metadata as its last write, and a recovery journal naming that id is discarded instead of applied. Recovery also leaves a journal alone while the game instance that wrote it is still running.
+- **Autosave and Checkpoints:** a warning is logged once when the save journal cannot be written to the config file, where the interrupted-save recovery would otherwise be lost silently. A completed save now writes that file once instead of twice.
+- **Actor Spawner:** a copy of a spawned actor that carries its tags, such as one spawned from it as a template, is no longer destroyed at the next save. It is adopted with its own ID and stable name so references saved after adoption keep resolving after load.
+- **Autosave and Checkpoints:** a checkpoint's completion marker is written after its checkpoint record, so failed record writes cannot make recovery keep an incomplete checkpoint. Recovery checks the marker on disk.
+- **Autosave and Checkpoints:** shutting down an idle second game instance, or saving its current slot again, no longer clears a recovery journal owned by another running instance.
+- **Autosave and Checkpoints:** when a checkpoint's record is written but its completion marker is not, the record is reverted, so later saves keep the previous checkpoint instead of carrying the failed one along.
+- **Geometry Collection:** a restore whose physics synchronization fails right after the game-thread state was applied is retried within the restore budget instead of failing at once with simulation disabled.
+- **World Partition placed and runtime actors:** dormant records are checked against one snapshot of cell visibility per pass instead of walking every cell for every record, and cell queries no longer build a debug name per candidate.
+- **Instances:** a save skips the full rebuild and diff of sources whose instance data has not changed since their delta was last captured.
+- **Instances:** capture stamps are released when sources leave discovery or stream out, keeping the optimization's cache limited to loaded sources.
+- **World Partition:** the runtime manager no longer assumes a valid world when it forwards save and load events to the placed subsystem.
+
 ## 1.3.2 - 2026-11-12
 
 ### Documentation

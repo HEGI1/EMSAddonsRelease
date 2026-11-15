@@ -72,6 +72,15 @@ public:
 	UPROPERTY(Config, EditAnywhere, Category = "Automatic Triggers")
 	bool bAutosaveWhenLeavingMap = false;
 
+	/**
+	 * Keeps the periodic and after-map-load triggers from saving while the profile holds saved progress
+	 * that this game session has neither loaded nor written, such as right after the game starts.
+	 * Without it, such a save stores the freshly opened map as the newest save of the profile.
+	 * Request Autosave, Manual Save and checkpoints are explicit and never held back.
+	 */
+	UPROPERTY(Config, EditAnywhere, Category = "Automatic Triggers")
+	bool bAutomaticSavesRequireLoadedProgress = true;
+
 	/** Upper limit for Autosave Slot Count. */
 	static constexpr int32 MaxAutosaveSlots = 10;
 

@@ -166,6 +166,10 @@ bool AEMSInstanceManager::ReplaceInstanceWithSettings(
 		return false;
 	}
 
+	// Both components changed under the manager's own hand, so cached keys go at once
+	// rather than at their next validation.
+	InvalidateInstanceKeys();
+
 	// Both sources now describe committed gameplay state. Any saved delta was
 	// already reconciled; newly created targets have no saved state to overwrite.
 	MarkSourceRestored(SourceId);

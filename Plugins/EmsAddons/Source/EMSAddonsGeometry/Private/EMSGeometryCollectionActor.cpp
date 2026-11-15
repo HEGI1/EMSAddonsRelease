@@ -492,9 +492,10 @@ void AEMSGeometryCollectionActor::AttemptRestore()
 	if (RequiresPhysicsProxySynchronization()
 		&& !SynchronizePhysicsThreadState())
 	{
-		MarkRestoreUnsafeAndFail(LOCTEXT(
-			"GeometryPhysicsSyncFailedAfterMutation",
-			"The Chaos physics collection could not be synchronized after game-thread state was applied. Simulation was disabled to prevent divergent state."));
+		// Recreating the physics state can leave the new proxy or its scene a few
+		// frames behind. The game-thread state is already applied, so only this
+		// step is retried; the budget's end disables simulation as before.
+		ScheduleRestoreRetry();
 		return;
 	}
 
@@ -518,6 +519,13 @@ void AEMSGeometryCollectionActor::ScheduleRestoreRetry()
 		&& GetRestoreClockSeconds() - RestoreStartSeconds
 			>= FMath::Max(0.0f, RestoreTimeoutSeconds))
 	{
+		if (bGameThreadStateApplied)
+		{
+			MarkRestoreUnsafeAndFail(LOCTEXT(
+				"GeometryPhysicsSyncFailedAfterMutation",
+				"The Chaos physics collection could not be synchronized after game-thread state was applied. Simulation was disabled to prevent divergent state."));
+			return;
+		}
 		FailRestoreKeepingSavedState(LOCTEXT("GeometryRestoreTimeout", "Geometry Collection restoration timed out while waiting for runtime resources. The saved state is kept until a later restore."));
 		return;
 	}
@@ -525,6 +533,13 @@ void AEMSGeometryCollectionActor::ScheduleRestoreRetry()
 	UWorld* World = GetWorld();
 	if (!World)
 	{
+		if (bGameThreadStateApplied)
+		{
+			MarkRestoreUnsafeAndFail(LOCTEXT(
+				"GeometryPhysicsSyncNoWorld",
+				"The Chaos physics collection could not be synchronized and the restore cannot retry without a valid world. Simulation was disabled to prevent divergent state."));
+			return;
+		}
 		FailRestoreKeepingSavedState(LOCTEXT("GeometryRestoreNoWorld", "Geometry Collection restoration cannot retry without a valid world. The saved state is kept until a later restore."));
 		return;
 	}

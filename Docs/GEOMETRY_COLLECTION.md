@@ -14,7 +14,7 @@ It works in streamed levels and World Partition, and already includes a [Physics
 
 - Fracture state and piece positions are saved. Chaos removal and decay timers are not.
 - By default, a save only restores onto the same Geometry Collection asset. See **Asset Mismatch Policy** below.
-- Restoration may take a moment while Chaos starts up. If it can't finish, the saved state is kept for the next load.
+- Restoration may take a moment while Chaos starts up. Missing runtime resources keep the saved state for the next load. A physics synchronization failure is retried; if it still fails after piece state was applied, simulation is disabled to avoid running divergent game-thread and physics state. Check **Get EMS Addon Restore Result** for the failure.
 - Saving and restoration run on the server or in standalone. Replication is your project's responsibility.
 
 ## Blueprint nodes

@@ -39,26 +39,44 @@ namespace
 		return EMSAddonsWorldPartition::IsSupportedCell(Cell) ? Cell : nullptr;
 	}
 
-	bool IsRequiredCellReady(const UWorld* World, const FGuid& Id)
+	/**
+	 * Visibility of every generated cell, read once per reconcile.
+	 *
+	 * Reconcile runs on each cell that becomes visible and once a second. Walking
+	 * the whole runtime hash for every dormant record made that cost grow with
+	 * records times cells.
+	 */
+	struct FCellVisibilitySnapshot
 	{
-		if (!Id.IsValid()) return true;
-		const UWorldPartition* WP = World->GetWorldPartition();
-		if (!WP || !WP->RuntimeHash) return false;
-		bool bAnyCell = false;
-		bool bFound = false;
-		bool bVisible = false;
-		WP->RuntimeHash->ForEachStreamingCells([&](const UWorldPartitionRuntimeCell* Cell)
+		explicit FCellVisibilitySnapshot(const UWorld* InWorld) : World(InWorld) {}
+
+		bool IsRequiredCellReady(const FGuid& Id)
 		{
-			if (Cell)
+			if (!Id.IsValid()) return true;
+			if (!bBuilt)
 			{
-				bAnyCell = true;
-				if (Cell->GetGuid() == Id) { bFound = true; bVisible = Cell->IsVisible(); }
+				bBuilt = true;
+				const UWorldPartition* WP = World ? World->GetWorldPartition() : nullptr;
+				if (WP && WP->RuntimeHash)
+				{
+					WP->RuntimeHash->ForEachStreamingCells([this](const UWorldPartitionRuntimeCell* Cell)
+					{
+						if (Cell) CellVisibility.Add(Cell->GetGuid(), Cell->IsVisible());
+						return true;
+					});
+				}
 			}
-			return true;
-		});
-		// Regenerated grids may no longer contain the saved support cell.
-		return bAnyCell && (!bFound || bVisible);
-	}
+			if (CellVisibility.IsEmpty()) return false;
+			// Regenerated grids may no longer contain the saved support cell.
+			const bool* bVisible = CellVisibility.Find(Id);
+			return !bVisible || *bVisible;
+		}
+
+	private:
+		const UWorld* World = nullptr;
+		TMap<FGuid, bool> CellVisibility;
+		bool bBuilt = false;
+	};
 
 	/** Save logical gravity even if the independent guard has borrowed the flag. */
 	bool SavePlacedActor(AActor* Actor, TArray<uint8>& OutBinary)
@@ -272,6 +290,7 @@ bool UEMSWorldPartitionPlacedSubsystem::RegisterPlacedActor(UEMSWorldPartitionPl
 		Baseline.bInstanceComponent = Component->CreationMethod == EComponentCreationMethod::Instance;
 		{
 			TGuardValue<bool> Guard(bCapturing, true);
+			TGuardValue<AActor*> BaselineActor(BaselineCaptureActor, Actor);
 			if (!SavePlacedActor(Actor, Baseline.State.ActorBinaryData)) return false;
 		}
 		// Save callbacks can destroy the actor or invalidate the coordinator.
@@ -537,6 +556,7 @@ void UEMSWorldPartitionPlacedSubsystem::Reconcile()
 		if (!RejectedIds.Contains(Id)) UE_LOG(LogEMSAddonsWorldPartition, Warning, TEXT("Duplicate placed save identity is retained without restoration until the next load. Id=%s"), *Id.ToString());
 		RejectedIds.Add(Id);
 	}
+	FCellVisibilitySnapshot CellVisibility(GetWorld());
 	for (const FGuid& Id : Ids)
 	{
 		if (!PrimaryManager.IsValid()) return;
@@ -546,7 +566,7 @@ void UEMSWorldPartitionPlacedSubsystem::Reconcile()
 		const FEMSWorldPartitionPlacedActorRecord* Record = Records.IsValidIndex(Index) && Records[Index].State.LocalId == Id
 			? &Records[Index] : FindRecord(Id);
 		if (!Record || Record->bDestroyed) continue;
-		if (IsRequiredCellReady(GetWorld(), Record->State.RequiredCellGuid)
+		if (CellVisibility.IsRequiredCellReady(Record->State.RequiredCellGuid)
 			&& EMSAddonsWorldPartition::QueryCellCoverage(GetWorld(), Record->State.SavedTransform.GetLocation()).IsVisible())
 		{
 			Restore(*Record);

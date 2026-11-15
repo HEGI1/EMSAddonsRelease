@@ -294,8 +294,10 @@ public:
 	/**
 	 * Recovers from a game that ended while an addon save was writing (crash, power loss, forced quit).
 	 * When the current EMS slot is still the slot that save was writing, the previous slot becomes current
-	 * again and the incomplete slot is deleted. Runs automatically once per process when the first game
-	 * instance starts. Returns true when it recovered a save.
+	 * again and the incomplete slot is deleted. A slot whose metadata shows that the journaled save did
+	 * complete is kept, and nothing is recovered while the process that wrote the journal still runs.
+	 * Runs automatically once per process when the first game instance starts. Returns true when it
+	 * recovered a save.
 	 */
 	bool RecoverInterruptedSave();
 
@@ -450,10 +452,34 @@ private:
 	UPROPERTY(config)
 	FString InterruptedSavePreviousSlot;
 
+	/** Unique per journaled save. The slot's metadata repeats it once that save has completed. */
+	UPROPERTY(config)
+	FString InterruptedSaveId;
+
+	/** Process that wrote the journal, so a second running instance never recovers a save still in progress. */
+	UPROPERTY(config)
+	int32 InterruptedSaveProcessId = 0;
+	/** True while a different running instance of this executable owns the journal. */
+	bool IsSaveJournalOwnedByAnotherProcess() const;
+
+	/** Writes the journal and slot exclusions to the config file, and warns once when they do not reach disk. */
+	void PersistSaveState();
+	int32 SaveStateWriteBatchDepth = 0;
+	bool bSaveStateWritePending = false;
+
+	/** The EMS user and profile whose progress this session has loaded or written. */
+	FString SessionProgressUser;
+	FString SessionProgressProfile;
+	void MarkSessionProgressCurrent();
+	/** True when an automatic trigger would write over saved progress this session never loaded. */
+	bool WouldOverwriteUnloadedProgress();
+	double MapLoadAutosaveWaitStartSeconds = -1.0;
+	bool bReportedUnloadedProgressSkip = false;
+
 	/** Records that an addon save is about to make TargetSlot current and write it. */
 	void BeginSaveJournal(const FString& TargetSlot, const FString& PreviousSlot);
-	/** Ends current-slot recovery after completion or return; persistent target exclusions are independent. */
-	void ClearSaveJournal();
+	/** Idle cleanup clears only this process's journal; verified recovery or a superseding save may clear a foreign one. */
+	void ClearSaveJournal(bool bAllowForeignOwner = false);
 	/** Clears a journal left by a cut-off save once a successful EMS save of all addon data rewrote its slot. */
 	void ClearJournalCompletedBy(const FString& SavedSlot, ESaveGameMode Mode);
 	/** Makes SlotBeforeTravelLoad current again when a load never started in the old world (failed travel, or no load task). */
@@ -475,7 +501,9 @@ private:
 		AEMSCheckpoint* CheckpointActor,
 		const FText& DisplayName = FText());
 
-	bool WriteSaveSlotMetadata(const FString& SlotName, const FText& DisplayName, EEMSSaveSlotType SaveType);
+	/** bMarkJournaledSaveComplete stamps the running save's journal id, which only the end of a save may do. */
+	bool WriteSaveSlotMetadata(const FString& SlotName, const FText& DisplayName, EEMSSaveSlotType SaveType,
+		bool bMarkJournaledSaveComplete = false);
 	bool HasWrittenActiveSlotInfo() const;
 	bool DoesSaveSlotRemain(const FString& SlotName) const;
 	/** True for a persisted exclusion of the current EMS user, except the target of the save still running. */

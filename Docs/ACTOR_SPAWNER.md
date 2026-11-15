@@ -17,6 +17,7 @@ Spawned actors don't need the EMS Actor Save Interface; the spawner saves and re
 - Restored actors get the normal EMS load callbacks.
 - Attachment to the spawner is restored. Re-attach spawned actors to each other in **On Actor Restored**.
 - Duplicating a spawner in the editor gives the copy a new identity. Moving it to another level keeps its identity.
+- A gameplay copy carrying a spawned actor's tags is adopted when the spawner next rebuilds its bindings during save or load. It receives its own ID and stable actor name, so references saved after adoption keep that path on reload. **On Actor Spawned** remains the event for actors created through the spawner's **Spawn Actor** node.
 - Spawning, removal, and restoration run on the server or in standalone. Replication is your project's responsibility.
 
 ## Blueprint nodes

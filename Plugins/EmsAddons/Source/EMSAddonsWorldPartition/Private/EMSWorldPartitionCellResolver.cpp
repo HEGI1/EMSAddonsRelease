@@ -76,7 +76,12 @@ EMSAddonsWorldPartition::FEMSWorldPartitionCellCoverage EMSAddonsWorldPartition:
 		Rank.bHLOD = Cell->GetIsHLOD();
 		Rank.bHasDataLayers = Cell->HasDataLayers();
 		Rank.CellGuid = Cell->GetGuid();
-		Rank.DebugName = Cell->GetDebugName();
+		// Only the verbose log below reads the name, and building it allocates for every
+		// candidate of every query. Cell GUIDs already order the candidates.
+		if (UE_LOG_ACTIVE(LogEMSAddonsWorldPartition, Verbose))
+		{
+			Rank.DebugName = Cell->GetDebugName();
+		}
 		if (RankingBounds.IsValid)
 		{
 			const FVector Size = RankingBounds.GetSize().GetAbs();

@@ -20,6 +20,7 @@ The component turns off the actor's **Is Spatially Loaded** setting automaticall
 - Only saved variables survive recreation. Mark per-instance values for EMS saving; extra components added only on the placed instance are not rebuilt.
 - Add an [EMS Physics Streaming Guard](PHYSICS_STREAMING_GUARD.md) in the actor's class if it needs one after recreation.
 - In **End Play**, use **Is Managed Actor Removal In Progress** to tell streaming removal apart from gameplay destruction.
+- The editor-placed state is read before **Begin Play**, so the actor's **Actor Pre Save** and **Actor Saved** events run once early. Check **Is Capturing Authored Defaults** in those events to skip anything that needs Begin Play.
 - Up to 4,096 placed actors per map, including destroyed ones.
 - Restoration runs on the server or in standalone. Replication is your project's responsibility.
 
@@ -37,7 +38,7 @@ Use **Get World Subsystem** → **EMS World Partition Placed Subsystem** for the
 
 | Task | Nodes |
 | --- | --- |
-| Check an actor | **Is Placed Actor Managed**, **Is Managed Actor Removal In Progress** |
+| Check an actor | **Is Placed Actor Managed**, **Is Managed Actor Removal In Progress**, **Is Capturing Authored Defaults** |
 | List loaded actors | **Get Managed Placed Actors** |
 | Read the actor's saved ID | **Get Placement Id** |
 

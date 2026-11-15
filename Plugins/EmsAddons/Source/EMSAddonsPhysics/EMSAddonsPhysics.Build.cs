@@ -14,7 +14,11 @@ public class EMSAddonsPhysics : ModuleRules
 			{
 				"Core",
 				"CoreUObject",
-				"Engine"
+				"Engine",
+				"DeveloperSettings"
 			});
+
+		// Held AI characters pause their Move To instead of losing it.
+		PrivateDependencyModuleNames.Add("AIModule");
 	}
 }

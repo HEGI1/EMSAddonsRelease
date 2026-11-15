@@ -28,6 +28,9 @@ Saved/
 /Content/__ExternalActors__/EasyMultiSaveContent/
 /Content/__ExternalObjects__/EasyMultiSaveContent/
 
+# Temporary map roots created by the World Partition map-scope automation tests.
+/Content/EMSMapScope_*/
+
 # Internal notes. The module guides in Docs/ are tracked and linked from
 # README.md, so only the superseded planning documents and the manual
 # acceptance checklists are ignored.

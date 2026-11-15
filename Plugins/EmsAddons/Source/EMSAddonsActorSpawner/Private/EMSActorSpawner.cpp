@@ -688,11 +688,48 @@ void AEMSActorSpawner::RebuildLiveBindings()
 	{
 		RegisterLiveActor(Pair.Key, Pair.Value);
 	}
+	// A second actor carrying a registered id is a copy gameplay made of a spawned actor,
+	// for example by spawning from it as a template, which copies its tags. It is a live
+	// gameplay actor, so it is kept and becomes a spawned actor of its own; the next save
+	// gives it a record. Only a copy that cannot be adopted is released from the spawner.
 	for (AActor* Duplicate : DuplicateCandidates)
 	{
-		if (IsValid(Duplicate))
+		if (!IsValid(Duplicate))
 		{
-			Duplicate->Destroy();
+			continue;
+		}
+		FGuid AdoptedId;
+		do
+		{
+			AdoptedId = FGuid::NewGuid();
+		}
+		while (FindRecord(AdoptedId) || LiveActorsById.Contains(AdoptedId));
+
+		// A restored child is named from its id. Assign that name before capturing
+		// the copy, so references saved after adoption resolve the same path after load.
+		const FName StableName = MakeStableActorName(AdoptedId);
+		const bool bNamed = EMSAddons::ReleaseDestroyedActorName(GetLevel(), StableName)
+			&& Duplicate->Rename(*StableName.ToString(), nullptr,
+				REN_DontCreateRedirectors | REN_NonTransactional | REN_DoNotDirty);
+		if (bNamed && RegisterLiveActor(AdoptedId, Duplicate))
+		{
+			UE_LOG(
+				LogEMSAddonsActorSpawner,
+				Log,
+				TEXT("A copy of a spawned actor carried its identity and was adopted as a separate spawned actor. Spawner=%s Actor=%s"),
+				*GetPathName(),
+				*Duplicate->GetPathName());
+		}
+		else
+		{
+			RemoveTagsWithPrefix(Duplicate, SpawnedActorTagPrefix);
+			RemoveTagsWithPrefix(Duplicate, SpawnerOwnerTagPrefix);
+			UE_LOG(
+				LogEMSAddonsActorSpawner,
+				Warning,
+				TEXT("A copy of a spawned actor carried its identity and could not be adopted, so this spawner does not persist it. Spawner=%s Actor=%s"),
+				*GetPathName(),
+				*Duplicate->GetPathName());
 		}
 	}
 }

@@ -52,11 +52,19 @@ namespace
 		}
 	}
 
-	bool IsCellVisible(UWorld* World, const FGuid& CellGuid)
+	/**
+	 * The GUIDs of every cell that is fully visible right now, read in one pass.
+	 *
+	 * Dormant records are re-tested on every cell that becomes visible and once a
+	 * second. Walking the streaming levels once per record made that cost grow
+	 * with records times cells.
+	 */
+	void GatherVisibleCellGuids(UWorld* World, TSet<FGuid>& OutVisibleCells)
 	{
-		if (!IsValid(World) || !CellGuid.IsValid())
+		OutVisibleCells.Reset();
+		if (!IsValid(World))
 		{
-			return !CellGuid.IsValid();
+			return;
 		}
 		for (ULevelStreaming* StreamingLevel : World->GetStreamingLevels())
 		{
@@ -65,12 +73,11 @@ namespace
 			const UWorldPartitionRuntimeLevelStreamingCell* Cell = WorldPartitionStreaming
 				? Cast<UWorldPartitionRuntimeLevelStreamingCell>(WorldPartitionStreaming->GetWorldPartitionRuntimeCell())
 				: nullptr;
-			if (Cell && Cell->GetGuid() == CellGuid)
+			if (Cell && StreamingLevel->GetLevelStreamingState() == ELevelStreamingState::LoadedVisible)
 			{
-				return StreamingLevel->GetLevelStreamingState() == ELevelStreamingState::LoadedVisible;
+				OutVisibleCells.Add(Cell->GetGuid());
 			}
 		}
-		return false;
 	}
 
 
@@ -994,6 +1001,10 @@ void UEMSWorldPartitionRuntimeSubsystem::RestoreVisibleDormantRecords()
 		SeenIds.Add(Record.LocalId);
 	}
 
+	// Read once for the whole pass, and only when a record actually names a cell.
+	TSet<FGuid> VisibleCellGuids;
+	bool bVisibleCellsGathered = false;
+
 	const int32 ProcessCount = FMath::Min(Manager->RuntimeActorRecords.Num(), MaxRuntimeActorRecords);
 	for (int32 Index = 0; Index < ProcessCount; ++Index)
 	{
@@ -1009,11 +1020,17 @@ void UEMSWorldPartitionRuntimeSubsystem::RestoreVisibleDormantRecords()
 		{
 			continue;
 		}
-		if (Record.RequiredCellGuid.IsValid()
-			&& DoesRuntimeCellExist(Record.RequiredCellGuid)
-			&& !IsCellVisible(GetWorld(), Record.RequiredCellGuid))
+		if (Record.RequiredCellGuid.IsValid() && DoesRuntimeCellExist(Record.RequiredCellGuid))
 		{
-			continue;
+			if (!bVisibleCellsGathered)
+			{
+				GatherVisibleCellGuids(GetWorld(), VisibleCellGuids);
+				bVisibleCellsGathered = true;
+			}
+			if (!VisibleCellGuids.Contains(Record.RequiredCellGuid))
+			{
+				continue;
+			}
 		}
 		if (EMSAddonsWorldPartition::QueryCellCoverage(
 			GetWorld(), Record.SavedTransform.GetLocation()).IsVisible())
