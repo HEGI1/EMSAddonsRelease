@@ -19,8 +19,8 @@ the meantime. A pause menu's Save or Load would silently do nothing.
 Manual Save, Load Save and a travelling Load Last Checkpoint therefore accept the request, unpause briefly,
 let that streaming work finish, restore the pause and run. EMS's own paused save path is the precedent: it
 unpauses for the duration of every save and pauses again afterwards. Only identifiable streaming loads
-are waited out. EMS 1.85/1.86 keep the flags distinguishing automatic memory-only streaming saves from
-ordinary disk saves private; every active save is therefore a conflict, including Level-only saves.
+are waited out. EMS keeps the flags distinguishing automatic memory-only streaming saves from ordinary
+disk saves private; every active save is therefore a conflict, including Level-only saves.
 */
 
 namespace

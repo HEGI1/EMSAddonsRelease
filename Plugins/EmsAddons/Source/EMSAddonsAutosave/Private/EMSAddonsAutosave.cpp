@@ -1,6 +1,7 @@
 //Easy Multi Save Addons - Copyright (C) 2026 by Michael Hegemann.
 #include "EMSAddonsAutosave.h"
 
+#include "EMSAddonsVersion.h"
 #include "EMSAutosaveMapTravel.h"
 #include "Modules/ModuleManager.h"
 #include "UObject/UObjectGlobals.h"

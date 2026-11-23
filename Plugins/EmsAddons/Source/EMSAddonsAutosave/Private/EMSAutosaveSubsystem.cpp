@@ -492,6 +492,13 @@ void UEMSAutosaveSubsystem::StartSave(
 		FailBeforeStart(nullptr);
 		return;
 	}
+	// Nothing below may touch an EMS backup: it is read-only, and preparing the target
+	// (carried files, Level data removal, cleanup after failure) would delete its files.
+	if (!CanWriteAddonSave(TargetSlot, TEXT("The save")))
+	{
+		FailBeforeStart(nullptr);
+		return;
+	}
 
 	// Carried custom saves (and the checkpoint record) go with the progress into the
 	// target before it becomes current, so the game reads current data from it.
@@ -510,6 +517,14 @@ void UEMSAutosaveSubsystem::StartSave(
 	// recovery journal. Cancellation, copy failure, user changes and restart must all keep
 	// a mixed snapshot out of addon menus and loads until a complete replacement succeeds.
 	SetSlotUnavailable(TargetSlot, true);
+
+	// Continuing a loaded EMS backup into its own slot: restore it there first, so EMS's auto
+	// backup of that slot's previous files cannot replace the backup the game came from.
+	if (!RestoreOwnBackupBeforeSave(PreviousSlot, TargetSlot))
+	{
+		FailBeforeStart(nullptr);
+		return;
+	}
 
 	// The target may hold a checkpoint's save (an earlier save of this checkpoint slot, or
 	// a 1.1 checkpoint in the profile slot). Retire that record before anything is written,
@@ -1092,7 +1107,7 @@ bool UEMSAutosaveSubsystem::CommitCheckpoint(
 	return true;
 }
 
-bool UEMSAutosaveSubsystem::UpgradeLegacyCheckpointRecord(const FString& Slot)
+bool UEMSAutosaveSubsystem::UpgradeLegacyCheckpointRecord(const FString& Slot, const FString& HolderSlot)
 {
 	UEMSObject* EMS = UEMSObject::Get(this);
 	UEMSCheckpointSaveGame* Save = ResolveCheckpointSave(Slot);
@@ -1102,7 +1117,7 @@ bool UEMSAutosaveSubsystem::UpgradeLegacyCheckpointRecord(const FString& Slot)
 	}
 
 	FEMSCheckpointRecord Upgraded;
-	EMSCheckpoint::ResolveRecord(Save, FSavePaths::ValidateSaveName(Slot), Upgraded);
+	EMSCheckpoint::ResolveRecord(Save, FSavePaths::ValidateSaveName(HolderSlot.IsEmpty() ? Slot : HolderSlot), Upgraded);
 	const FEMSCheckpointRecord Legacy = Save->LatestCheckpoint;
 	const FGuid LegacySaveGeneration = Save->SaveGeneration;
 	const FGuid LegacyCheckpointGeneration = Save->CheckpointGeneration;
@@ -1193,7 +1208,11 @@ FEMSCheckpointRecord UEMSAutosaveSubsystem::GetCurrentCheckpoint()
 
 	const FString CurrentSlot = EMS->GetCurrentSaveGameName();
 	const FEMSCheckpointRecord Current = GetCheckpointForSlot(CurrentSlot);
-	if (!Current.IsValid() || FSavePaths::ValidateSaveName(Current.SaveSlot).Equals(CurrentSlot, ESearchCase::IgnoreCase))
+	// A loaded backup of a checkpoint slot holds that checkpoint's own record, which names the primary.
+	const FString RecordSlot = FSavePaths::ValidateSaveName(Current.SaveSlot);
+	if (!Current.IsValid()
+		|| RecordSlot.Equals(CurrentSlot, ESearchCase::IgnoreCase)
+		|| RecordSlot.Equals(GetPrimarySlotName(CurrentSlot), ESearchCase::IgnoreCase))
 	{
 		return Current;
 	}
@@ -1306,7 +1325,14 @@ bool UEMSAutosaveSubsystem::LoadLastCheckpoint()
 
 	// The checkpoint slot must still hold this checkpoint. Another checkpoint
 	// sharing its Checkpoint Slot Name may have saved over it since.
-	const FString CheckpointSlot = FSavePaths::ValidateSaveName(Current.SaveSlot);
+	// While a backup of the checkpoint slot is the current slot, that backup is reloaded.
+	FString CheckpointSlot = FSavePaths::ValidateSaveName(Current.SaveSlot);
+	if (const FString CurrentSlot = EMS->GetCurrentSaveGameName();
+		!CurrentSlot.Equals(CheckpointSlot, ESearchCase::IgnoreCase)
+		&& GetPrimarySlotName(CurrentSlot).Equals(CheckpointSlot, ESearchCase::IgnoreCase))
+	{
+		CheckpointSlot = CurrentSlot;
+	}
 	const FEMSCheckpointRecord Stored = EMS->DoesSaveSlotExist(CheckpointSlot)
 		? GetCheckpointForSlot(CheckpointSlot)
 		: FEMSCheckpointRecord();

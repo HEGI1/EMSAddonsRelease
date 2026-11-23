@@ -6,6 +6,7 @@
 #include "EMSAsyncLoadGame.h"
 #include "EMSAutosaveSettings.h"
 #include "EMSCheckpointSaveGame.h"
+#include "EMSCheckpointUtils.h"
 #include "EMSInfoSaveGame.h"
 #include "EMSLevel.h"
 #include "EMSMisc.h"
@@ -30,12 +31,18 @@ Save slots are ordinary EMS slots of one profile:
   <profile>_checkpoint[_<name>]      checkpoint saves, named on the checkpoint actor
 
 A save switches the current EMS slot to its target and runs a normal EMS save there.
-EMS keeps its multi-level memory across any switch, so the new slot receives the complete
-session. Streaming memory (World Partition cells, streamed sub-levels) is only kept by
-EMS 1.86 when the new slot has no Level data; switching to a slot with Level data stops
-memory restoration until the next load, like EMS 1.85. A save therefore removes the stale
-Level data of the slot it replaces before switching to it. Loading switches the slot the
-normal way, which makes EMS read the slot from disk.
+EMS keeps its multi-level memory and its streaming cache across any switch, so the new slot
+receives the complete session. EMS only keeps restoring streamed World Partition cells and
+sub-levels from that cache when the new slot has no Level data; switching to a slot with Level
+data stops memory restoration until that slot's Level file is loaded or saved. A save therefore
+removes the stale Level data of the slot it replaces before switching to it. Loading switches
+the slot the normal way, which makes EMS read the slot from disk.
+
+EMS backups (Get Backup Name: "<slot>_bak0", "bak0_<slot>" on consoles) are read-only. A backup
+can be loaded and belongs to the profile of its primary slot, but no addon save ever writes into
+one, and no name is accepted that EMS would resolve to one. A save that continues a loaded backup
+into the slot it backs up first restores the backup onto that slot, so EMS's auto backup of the
+slot's previous files never replaces the loaded backup.
 */
 
 namespace
@@ -95,6 +102,12 @@ namespace
 		return FSavePaths::ValidateSaveName(FString(TEXT("A")) + Name.TrimStartAndEnd()).Len() > 1;
 	}
 
+	/** True when EMS reserves the slot ID, for example for a backup. Such a slot is never an addon save target. */
+	bool IsReservedSlot(const FString& SlotName)
+	{
+		return FSavePaths::IsSlotNameReserved(FSavePaths::ValidateSaveName(SlotName));
+	}
+
 	FString ResolveExistingSlot(const TArray<FString>& Slots, const FString& SlotName)
 	{
 		if (Slots.Contains(SlotName))
@@ -125,10 +138,53 @@ FString UEMSAutosaveSubsystem::MakeManualSlotName(const FString& Profile, const 
 FString UEMSAutosaveSubsystem::MakeCheckpointSlotName(const FString& Profile, const FString& CheckpointSlotName)
 {
 	// A name EMS stores nothing of selects the default checkpoint slot, like an empty one.
+	// So does a name that would make the slot an EMS backup ("..._bak0"), which is read-only.
 	const FString Name = CheckpointSlotName.TrimStartAndEnd();
-	return FSavePaths::ValidateSaveName(!HasStoredNamePart(Name)
-		? Profile + TEXT("_checkpoint")
-		: Profile + TEXT("_checkpoint_") + Name).ToLower();
+	const FString DefaultSlot = FSavePaths::ValidateSaveName(Profile + TEXT("_checkpoint")).ToLower();
+	if (!HasStoredNamePart(Name))
+	{
+		return DefaultSlot;
+	}
+	const FString NamedSlot = FSavePaths::ValidateSaveName(Profile + TEXT("_checkpoint_") + Name).ToLower();
+	return IsReservedSlot(NamedSlot) ? DefaultSlot : NamedSlot;
+}
+
+FString UEMSAutosaveSubsystem::GetPrimarySlotName(const FString& SlotName)
+{
+	const FString Name = FSavePaths::ValidateSaveName(SlotName);
+	FString Primary;
+	return FSavePaths::GetBackupBaseName(Name, Primary) ? Primary : Name;
+}
+
+bool UEMSAutosaveSubsystem::IsBackupSaveUserSelected(const UEMSObject* EMS)
+{
+	// Mirrors EMS: a Save User whose folder is a backup is read-only for every write.
+	const FString User = EMS ? EMS->GetCurrentSaveUserName() : FString();
+	return !User.IsEmpty() && FSavePaths::IsBackupSavePath(FSavePaths::ValidateSaveName(User));
+}
+
+bool UEMSAutosaveSubsystem::CanWriteAddonSave(const FString& TargetSlot, const TCHAR* Operation) const
+{
+	const UEMSObject* EMS = UEMSObject::Get(this);
+	if (!EMS)
+	{
+		return false;
+	}
+	// Refused before anything is written: preparing a save removes the target's stale Level data and
+	// deletes a failed target, which in a backup would destroy the very data the backup protects.
+	if (IsBackupSaveUserSelected(EMS))
+	{
+		LogMessage(FString::Printf(TEXT("%s refused: the current EMS Save User %s is a read-only backup."),
+			Operation, *EMS->GetCurrentSaveUserName()), true);
+		return false;
+	}
+	if (TargetSlot.TrimStartAndEnd().IsEmpty() || IsReservedSlot(TargetSlot))
+	{
+		LogMessage(FString::Printf(TEXT("%s refused: EMS reserves the slot name %s, for example for a read-only backup."),
+			Operation, *FSavePaths::ValidateSaveName(TargetSlot)), true);
+		return false;
+	}
+	return true;
 }
 
 FString UEMSAutosaveSubsystem::ResolveSaveSlotTarget(const FString& SlotName) const
@@ -141,7 +197,9 @@ FString UEMSAutosaveSubsystem::ResolveSaveSlotTarget(const FString& SlotName) co
 
 FString UEMSAutosaveSubsystem::GetSlotProfile(const FString& SlotName)
 {
-	const FString Name = FSavePaths::ValidateSaveName(SlotName);
+	// A backup belongs to the profile of the slot it backs up, so a game continued from a
+	// loaded backup keeps saving into that profile instead of starting a new one.
+	const FString Name = GetPrimarySlotName(SlotName);
 	const FString Separator = StoredPart(TEXT("_"));
 
 	const int32 Autosave = FindMarker(Name, StoredPart(TEXT("_Autosave_")), [](const FString& Rest)
@@ -224,7 +282,9 @@ bool UEMSAutosaveSubsystem::GetSaveSlotDetails(const FString& SlotName, FEMSSave
 
 	Details.SlotName = Slot;
 	Details.TimeStamp = GetSlotTime(EMS, Slot);
-	const FString Suffix = Slot.Mid(GetSlotProfile(Slot).Len());
+	// A backup is named like the slot it backs up.
+	const FString Named = GetPrimarySlotName(Slot);
+	const FString Suffix = Named.Mid(GetSlotProfile(Named).Len());
 	const FString ManualMarker = StoredPart(TEXT("_Manual_"));
 	const FString CheckpointMarker = StoredPart(TEXT("_Checkpoint"));
 	const FString AutosaveMarker = StoredPart(TEXT("_Autosave_"));
@@ -267,7 +327,7 @@ bool UEMSAutosaveSubsystem::GetSaveSlotDetails(const FString& SlotName, FEMSSave
 		// An older checkpoint already has a label. Only use a record naming this slot;
 		// later autosaves carry that record but are not themselves the checkpoint.
 		const FEMSCheckpointRecord Record = GetCheckpointForSlot(Slot);
-		if (Record.IsValid() && Record.SaveSlot.Equals(Slot, ESearchCase::IgnoreCase))
+		if (Record.IsValid() && FSavePaths::ValidateSaveName(Record.SaveSlot).Equals(Named, ESearchCase::IgnoreCase))
 		{
 			Details.SaveType = EEMSSaveSlotType::Checkpoint;
 			if (!Record.DisplayName.IsEmptyOrWhitespace())
@@ -327,7 +387,8 @@ bool UEMSAutosaveSubsystem::SetSaveSlotDisplayName(const FString& SlotName, FTex
 		|| IsCheckpointLoadInProgress() || IsSaveLoadInProgress()
 		|| !EMS || EMS->IsAsyncTaskActive(false)
 		|| !GetWorld() || !EMSAddons::HasPersistenceAuthority(GetWorld()->GetNetMode())
-		|| !GetSaveSlotDetails(SlotName, Details))
+		|| !GetSaveSlotDetails(SlotName, Details)
+		|| !CanWriteAddonSave(Details.SlotName, TEXT("Set Save Slot Display Name")))
 	{
 		return false;
 	}
@@ -393,13 +454,16 @@ FString UEMSAutosaveSubsystem::ResolveAutosaveTarget(const FString& Profile)
 	if (Count <= 0)
 	{
 		// The profile comes from the current slot, which is lowercase after any
-		// generated save. Keep writing the caller's original profile slot.
+		// generated save. Keep writing the caller's original profile slot. From a loaded
+		// backup of it, the save restores that backup first (RestoreOwnBackupBeforeSave).
 		return ResolveSaveSlotTarget(FSavePaths::ValidateSaveName(Profile));
 	}
 
 	// The current slot is the progress being continued. With more than one autosave
 	// slot it is never the one replaced, so a failed save can always switch back to it.
-	const FString CurrentSlot = EMS->GetCurrentSaveGameName();
+	// A loaded backup counts as its primary slot: writing that primary would also replace
+	// the backup with the primary's older files (EMS auto backup) while it is still in use.
+	const FString CurrentSlot = GetPrimarySlotName(EMS->GetCurrentSaveGameName());
 	const TArray<FString> ExistingSlots = EMS->GetSortedSaveSlots();
 	FString Oldest;
 	FString Incomplete;
@@ -455,15 +519,24 @@ bool UEMSAutosaveSubsystem::SwitchToSaveSlot(const FString& TargetSlot, const EE
 		return true;
 	}
 
+	// A save continues the session into its target. A read-only backup never is one, and the
+	// Level data removal below would delete the backup's own files.
+	if (Switch == EEMSSlotSwitch::ContinueSession && IsReservedSlot(ValidTarget))
+	{
+		LogMessage(FString::Printf(TEXT("Save refused: EMS reserves the slot name %s, for example for a read-only backup."), *ValidTarget), true);
+		return false;
+	}
+
 	const bool bStreamingSession = EMS->AutoSaveLoadWorldPartition() || EMS->AutoSaveLoadStreamingLevels();
 	const bool bWorldPartitionRestoring = EMS->AlwaysAutoLoadWorldPartition();
+	const FFileContext LevelFile(0, EMS->ActorSaveFile(ValidTarget));
 
-#if EMS_VERSION_NUMBER >= 186
 	/*
-	EMS 1.86 keeps restoring streamed cells and sub-levels from memory only when the new slot has
-	no Level data. Otherwise it clears memory loading like 1.85: World Partition reloads the whole
-	level from the new slot's disk data when the next cell streams in, and streamed sub-levels come
-	back unrestored. The save rewrites the Level file completely from session memory (EMS never
+	EMS keeps restoring streamed cells and sub-levels from its streaming cache only when the new slot
+	has no Level data. Otherwise memory restoration stops until that slot's Level file is loaded or
+	saved: World Partition reloads the whole level from the file when the next cell streams in, which
+	brings the replaced save's older actor state back into the running world, and streamed sub-levels
+	come back unrestored. The save rewrites the Level file completely from session memory (EMS never
 	merges the old file), so the stale one of the slot being replaced holds nothing the save needs.
 	Removing it first lets the running session continue into the new slot.
 	This applies to saves without Level data too. Keeping the file would make streamed cells reload
@@ -472,7 +545,6 @@ bool UEMSAutosaveSubsystem::SwitchToSaveSlot(const FString& TargetSlot, const EE
 	*/
 	if (Switch == EEMSSlotSwitch::ContinueSession && bStreamingSession)
 	{
-		const FFileContext LevelFile(0, EMS->ActorSaveFile(ValidTarget));
 		const bool bHadLevelData = FSaveFileIntegrity::DoesSaveExist(LevelFile);
 		EMS->DeleteDataFromSlot(ValidTarget, EDeleteSlotType::Level);
 		if (FSaveFileIntegrity::DoesSaveExist(LevelFile))
@@ -487,7 +559,6 @@ bool UEMSAutosaveSubsystem::SwitchToSaveSlot(const FString& TargetSlot, const EE
 			*bOutRemovedLevelData = bHadLevelData && EMS->DoesSaveSlotExist(ValidTarget);
 		}
 	}
-#endif
 
 	EMS->SetCurrentSaveGameName(ValidTarget);
 	const bool bSwitched = EMS->GetCurrentSaveGameName().Equals(ValidTarget, ESearchCase::IgnoreCase);
@@ -505,14 +576,10 @@ bool UEMSAutosaveSubsystem::SwitchToSaveSlot(const FString& TargetSlot, const EE
 					*ValidTarget), true);
 			}
 		}
-#if EMS_VERSION_NUMBER >= 186
-		else if (Switch == EEMSSlotSwitch::Return && EMS->DoesSaveSlotExist(ValidTarget))
-#else
-		else
-#endif
+		else if (Switch == EEMSSlotSwitch::Return && FSaveFileIntegrity::DoesSaveExist(LevelFile))
 		{
 			LogMessage(FString::Printf(
-				TEXT("Switching to %s stops EMS from restoring streamed levels from memory until the next load."),
+				TEXT("Switching to %s stops EMS from restoring streamed levels from memory until that slot is loaded or saved again."),
 				*ValidTarget), true);
 		}
 	}
@@ -606,8 +673,8 @@ bool UEMSAutosaveSubsystem::HasWrittenActiveSlotInfo() const
 {
 	UEMSObject* EMS = UEMSObject::Get(this);
 	const UEMSInfoSaveGame* Info = EMS ? EMS->GetSlotInfoObject(ActiveSaveSlot) : nullptr;
-	// EMS 1.85/1.86 do not propagate this write's result to the actor-save task.
-	// They update this clock only after a successful write and restore the old info on failure.
+	// EMS does not propagate this write's result to the actor-save task. It updates this
+	// clock only after a successful write and restores the old info on failure.
 	if (!Info || Info->LastSaveAttemptTime < ActiveSlotInfoWriteStartSeconds)
 	{
 		LogMessage(TEXT("The actor save finished, but EMS did not write its slot info. The save is incomplete."), true);
@@ -725,15 +792,34 @@ bool UEMSAutosaveSubsystem::CarryCustomFiles(const FString& SourceSlot, const FS
 
 	// A 1.1 record means "this slot is the checkpoint". Name the slot explicitly
 	// before the record is copied, or the copy would point at the target instead.
-	if (bIncludeCheckpointRecord && !UpgradeLegacyCheckpointRecord(ValidSource))
+	// An EMS backup is read-only, so its record is upgraded in the target after the copy.
+	// It names the backup's primary slot: EMS replaces the backup's files whenever the primary
+	// is written again, so only the primary can keep (or invalidate) that checkpoint.
+	const FString SourcePrimary = GetPrimarySlotName(ValidSource);
+	const bool bBackupSource = !SourcePrimary.Equals(ValidSource, ESearchCase::IgnoreCase);
+	bool bUpgradeInTarget = false;
+	bool bDropRecord = false;
+	if (bIncludeCheckpointRecord)
 	{
-		return false;
+		if (!bBackupSource && !UpgradeLegacyCheckpointRecord(ValidSource))
+		{
+			return false;
+		}
+		// A record naming the target names the save this one replaces, so that checkpoint
+		// ends here. A continued backup holds its primary's own record, for example.
+		UEMSCheckpointSaveGame* SourceSave = ResolveCheckpointSave(ValidSource);
+		FEMSCheckpointRecord SourceRecord;
+		bDropRecord = EMSCheckpoint::ResolveRecord(SourceSave, SourcePrimary, SourceRecord)
+			&& FSavePaths::ValidateSaveName(SourceRecord.SaveSlot).Equals(ValidTarget, ESearchCase::IgnoreCase);
+		bUpgradeInTarget = bBackupSource && !bDropRecord && EMSCheckpoint::IsLoadableLegacyRecord(SourceSave);
 	}
+	const FString& RecordFile = GetDefault<UEMSCheckpointSaveGame>()->SaveGameName;
 
 	TArray<FString> Present;
 	for (const FString& File : GetCarriedCustomFiles(bIncludeCheckpointRecord))
 	{
-		if (EMS->DoesCustomSaveExist(ValidSource, File))
+		const bool bDropped = bDropRecord && File.Equals(RecordFile, ESearchCase::IgnoreCase);
+		if (!bDropped && EMS->DoesCustomSaveExist(ValidSource, File))
 		{
 			Present.Add(File);
 			continue;
@@ -757,8 +843,69 @@ bool UEMSAutosaveSubsystem::CarryCustomFiles(const FString& SourceSlot, const FS
 		}
 	}
 
-	return Present.IsEmpty()
-		|| EMSAdv->CopySaveSlot(ValidTarget, ValidSource, ECopySaveSlotType::CustomFiles, Present, true);
+	if (!Present.IsEmpty()
+		&& !EMSAdv->CopySaveSlot(ValidTarget, ValidSource, ECopySaveSlotType::CustomFiles, Present, true))
+	{
+		return false;
+	}
+	return !bUpgradeInTarget || UpgradeLegacyCheckpointRecord(ValidTarget, SourcePrimary);
+}
+
+bool UEMSAutosaveSubsystem::RestoreOwnBackupBeforeSave(const FString& CurrentSlot, const FString& TargetSlot)
+{
+	UGameInstance* GameInstance = GetGameInstance();
+	UEMSObject* EMS = UEMSObject::Get(this);
+	UEMSObjectAdv* EMSAdv = GameInstance ? GameInstance->GetSubsystem<UEMSObjectAdv>() : nullptr;
+	const FString ValidCurrent = FSavePaths::ValidateSaveName(CurrentSlot);
+	const FString ValidTarget = FSavePaths::ValidateSaveName(TargetSlot);
+	if (ValidCurrent.IsEmpty()
+		|| ValidTarget.IsEmpty()
+		|| ValidCurrent.Equals(ValidTarget, ESearchCase::IgnoreCase)
+		|| !GetPrimarySlotName(ValidCurrent).Equals(ValidTarget, ESearchCase::IgnoreCase))
+	{
+		return true;
+	}
+	if (!EMS || !EMSAdv)
+	{
+		return false;
+	}
+
+	/*
+	The game continues a loaded EMS backup into the slot it backs up (Autosave Slot Count 0 or 1, or a
+	manual or checkpoint save of the same name). With "Auto Backup Previous Data", every file EMS writes
+	into that slot first copies the slot's previous file over the backup's. Without this restore, the
+	save would replace the loaded backup with the slot's previous save, file by file, and a failed save
+	would return the game to that mix. EMS's own restore (Copy Save Slot from a backup onto its slot) keeps the backup
+	unchanged, so afterwards those copies write the backup's own data back. The slot's newer save is
+	replaced, as the player chose to continue the backup.
+	*/
+	if (!EMSAdv->CopySaveSlot(ValidTarget, ValidCurrent, ECopySaveSlotType::FullSlot, GetCarriedCustomFiles(true), true))
+	{
+		LogMessage(FString::Printf(TEXT("The save was not started: EMS could not restore the backup %s onto %s before saving."), *ValidCurrent, *ValidTarget), true);
+		return false;
+	}
+
+	// A restore keeps the primary files the backup has no copy of. Writing them would back them up
+	// into the backup, so remove them now; the save writes its own.
+	for (const EDeleteSlotType Type : { EDeleteSlotType::Player, EDeleteSlotType::Level })
+	{
+		const bool bPlayer = Type == EDeleteSlotType::Player;
+		const FFileContext TargetFile(0, bPlayer ? EMS->PlayerSaveFile(ValidTarget) : EMS->ActorSaveFile(ValidTarget));
+		const FFileContext BackupFile(0, bPlayer ? EMS->PlayerSaveFile(ValidCurrent) : EMS->ActorSaveFile(ValidCurrent));
+		if (FSaveFileIntegrity::DoesSaveExist(BackupFile) || !FSaveFileIntegrity::DoesSaveExist(TargetFile))
+		{
+			continue;
+		}
+		EMS->DeleteDataFromSlot(ValidTarget, Type);
+		if (FSaveFileIntegrity::DoesSaveExist(TargetFile))
+		{
+			LogMessage(FString::Printf(TEXT("The save was not started: %s keeps data that its backup %s does not have."), *ValidTarget, *ValidCurrent), true);
+			return false;
+		}
+	}
+
+	LogMessage(FString::Printf(TEXT("Restored the loaded backup %s onto %s before saving; the newer save in %s was replaced."), *ValidCurrent, *ValidTarget, *ValidTarget), false);
+	return true;
 }
 
 bool UEMSAutosaveSubsystem::ManualSave(const FString& SaveName, FText DisplayName)
@@ -788,7 +935,9 @@ bool UEMSAutosaveSubsystem::ManualSave(const FString& SaveName, FText DisplayNam
 		|| !EMSAddons::HasPersistenceAuthority(World->GetNetMode())
 		|| !EMS
 		|| IsLevelStreamingBlockingSave()
-		|| IsSavingExcludedOn(World, TEXT("Manual Save")))
+		|| IsSavingExcludedOn(World, TEXT("Manual Save"))
+		// A name such as "Old_bak0" would make the slot the read-only backup of another save.
+		|| !CanWriteAddonSave(MakeManualSlotName(Profile, SaveName.TrimStartAndEnd()), TEXT("Manual Save")))
 	{
 		return false;
 	}

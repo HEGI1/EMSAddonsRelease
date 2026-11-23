@@ -43,6 +43,7 @@ bool UEMSAutosaveSubsystem::BeginSynchronousAutosave(
 	if (!EMS
 		|| TargetSlot.IsEmpty()
 		|| !EMS->GetCurrentSaveGameName().Equals(CurrentSlot, ESearchCase::IgnoreCase)
+		|| !CanWriteAddonSave(TargetSlot, TEXT("Autosave"))
 		|| !PreflightCarriedCustomFiles(CurrentSlot, TargetSlot, true))
 	{
 		return false;
@@ -50,6 +51,10 @@ bool UEMSAutosaveSubsystem::BeginSynchronousAutosave(
 	// Carrying custom files is already a write to the snapshot, even if the map-leave
 	// callback later cancels before EMS writes actors. Protect it across restarts too.
 	SetSlotUnavailable(TargetSlot, true);
+	if (!RestoreOwnBackupBeforeSave(CurrentSlot, TargetSlot))
+	{
+		return false;
+	}
 	if (!InvalidateCheckpointStoredIn(TargetSlot, true))
 	{
 		return false;

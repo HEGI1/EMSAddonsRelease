@@ -1,5 +1,6 @@
 //Easy Multi Save Addons - Copyright (C) 2026 by Michael Hegemann.
 #include "EMSAddonsWorldPartition.h"
+#include "EMSAddonsVersion.h"
 #if WITH_EDITOR
 #include "EMSWorldPartitionPlacedComponent.h"
 #include "GameFramework/Actor.h"

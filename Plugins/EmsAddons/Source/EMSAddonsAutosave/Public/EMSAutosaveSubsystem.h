@@ -171,7 +171,10 @@ public:
 	UFUNCTION(BlueprintPure, Category = "EMS Addons|Autosave and Checkpoints|Saves", meta = (DisplayName = "Get Save Profile"))
 	FString GetSaveProfile() const;
 
-	/** Returns the profile an EMS slot belongs to. A slot the addon did not name is its own profile. */
+	/**
+	 * Returns the profile an EMS slot belongs to. A slot the addon did not name is its own profile.
+	 * An EMS backup (Get Backup Name) belongs to the profile of the slot it backs up.
+	 */
 	UFUNCTION(BlueprintPure, Category = "EMS Addons|Autosave and Checkpoints|Saves", meta = (DisplayName = "Get Slot Profile"))
 	static FString GetSlotProfile(const FString& SlotName);
 
@@ -192,8 +195,14 @@ public:
 	/** Lowercase ID of a manual save slot of a profile, as EMS stores it. */
 	static FString MakeManualSlotName(const FString& Profile, const FString& SaveName);
 
-	/** Lowercase ID of a checkpoint slot of a profile. An empty name gives "<profile>_checkpoint". */
+	/**
+	 * Lowercase ID of a checkpoint slot of a profile. An empty name, or one EMS would store as a
+	 * read-only backup such as "Cave_bak0", gives "<profile>_checkpoint".
+	 */
 	static FString MakeCheckpointSlotName(const FString& Profile, const FString& CheckpointSlotName);
+
+	/** The slot an EMS backup name backs up, or the validated name itself when it is no backup. */
+	static FString GetPrimarySlotName(const FString& SlotName);
 
 	/**
 	 * Changes the periodic autosave interval for the current game session.
@@ -316,10 +325,11 @@ protected:
 
 	/**
 	 * Makes TargetSlot the current EMS slot. For ContinueSession in a World Partition or level streaming
-	 * session, the stale Level data of an existing TargetSlot is removed first: EMS 1.86 keeps restoring
+	 * session, the stale Level data of an existing TargetSlot is removed first: EMS keeps restoring
 	 * streamed cells from memory only when switching to a slot without Level data. bOutRemovedLevelData
 	 * reports that removal, after which TargetSlot no longer holds a loadable save until the save writes it.
-	 * Returns false when EMS refused the switch, for example because an EMS task is active.
+	 * Returns false when EMS refused the switch, for example because an EMS task is active, and for
+	 * ContinueSession into a name EMS reserves, such as a read-only backup.
 	 */
 	bool SwitchToSaveSlot(const FString& TargetSlot, EEMSSlotSwitch Switch, bool* bOutRemovedLevelData = nullptr);
 
@@ -327,8 +337,16 @@ protected:
 	 * Copies the carried custom files (and, unless excluded, the checkpoint record) from SourceSlot into
 	 * TargetSlot with EMS Copy Save Slot, and removes carried files the source does not have, so the
 	 * target never keeps stale ones. A checkpoint save excludes the record: it writes its own after success.
+	 * A 1.1 record in a read-only EMS backup is upgraded in the target and names the backup's primary slot.
 	 */
 	bool CarryCustomFiles(const FString& SourceSlot, const FString& TargetSlot, bool bIncludeCheckpointRecord = true);
+
+	/**
+	 * When CurrentSlot is an EMS backup of TargetSlot, restores it onto TargetSlot (EMS Copy Save Slot,
+	 * which keeps the backup) before a save writes there. Otherwise EMS's auto backup would replace the
+	 * loaded backup with the slot's previous files. False when the restore failed; nothing else to do is true.
+	 */
+	bool RestoreOwnBackupBeforeSave(const FString& CurrentSlot, const FString& TargetSlot);
 
 	/**
 	 * Clears the checkpoint record in Slot when it names Slot itself, i.e. Slot holds that checkpoint's save.
@@ -396,14 +414,13 @@ private:
 	 * addon that save failed, so it must not end the recovery journal or count as a save.
 	 */
 	bool bNextActorsSavedIsFailedAddonSave = false;
-	bool bWarnedSessionClearingSwitch = false;
 
 	/**
 	 * Paused-world handling. EMS streaming tasks advance on world timers, which stop while the game is paused,
 	 * so a pause that lands mid-stream leaves them active until unpause and EMS refuses every save and load.
 	 * Manual Save, Load Save and a travelling Load Last Checkpoint then unpause briefly, let that streaming work
 	 * finish, restore the pause and run. Only identifiable streaming loads are waited out, never a game
-	 * load or any save (EMS 1.85/1.86 do not publicly identify memory-only streaming saves).
+	 * load or any save (EMS does not publicly identify memory-only streaming saves).
 	 * The request stays bound to the EMS user and slot current when it was accepted; a change cancels it.
 	 */
 	EEMSPausedOperation PausedOperation = EEMSPausedOperation::None;
@@ -512,6 +529,13 @@ private:
 	bool PreflightCarriedCustomFiles(const FString& SourceSlot, const FString& TargetSlot, bool bIncludeCheckpointRecord) const;
 	/** Resolves a generated ID to the original spelling of an existing slot, for pre-lowercase saves. */
 	FString ResolveSaveSlotTarget(const FString& SlotName) const;
+	/** True when EMS treats the current Save User as a read-only backup. */
+	static bool IsBackupSaveUserSelected(const UEMSObject* EMS);
+	/**
+	 * False, with a warning naming Operation, when an addon save must not write TargetSlot: EMS reserves
+	 * the name (a read-only backup, for example) or the current Save User is a backup.
+	 */
+	bool CanWriteAddonSave(const FString& TargetSlot, const TCHAR* Operation) const;
 
 	/** True when World is in Excluded Maps. Logs Operation's refusal when it is not null. */
 	bool IsSavingExcludedOn(const UWorld* World, const TCHAR* Operation) const;
@@ -524,7 +548,8 @@ private:
 	/**
 	 * Makes the slot from before a failed or abandoned save current again.
 	 * Returns false only when the game is still on FailedSlot because EMS refused the switch (an EMS task is running).
-	 * With World Partition or level streaming, EMS stops restoring streamed cells from memory until the next load.
+	 * With World Partition or level streaming, when PreviousSlot has Level data, EMS stops restoring streamed
+	 * cells from memory until that slot is loaded or saved; World Partition reloads it on the next cell.
 	 */
 	bool ReturnToPreviousSlot(const FString& PreviousSlot, const FString& FailedSlot, EEMSSlotSwitch Switch = EEMSSlotSwitch::Return);
 	/**
@@ -547,8 +572,11 @@ private:
 
 	bool CommitCheckpoint(const FEMSCheckpointRecord& Record, const FString& SaveSlot);
 
-	/** Rewrites a 1.1 checkpoint record in Slot as a version 2 record naming Slot, before it is carried elsewhere. */
-	bool UpgradeLegacyCheckpointRecord(const FString& Slot);
+	/**
+	 * Rewrites a 1.1 checkpoint record in Slot as a version 2 record naming HolderSlot (Slot when empty),
+	 * before it is carried elsewhere.
+	 */
+	bool UpgradeLegacyCheckpointRecord(const FString& Slot, const FString& HolderSlot = FString());
 
 	/**
 	 * A game's own EMS save that wrote the slot holding a checkpoint replaced that checkpoint's

@@ -39,6 +39,7 @@ Use **Has Checkpoint** to decide whether to show a "Load checkpoint" option.
 
 - Empty (default): all checkpoints share one slot, and each new checkpoint replaces the last.
 - Different names: separate snapshots are kept. Checkpoints with the same name replace each other.
+- A name EMS can't store (such as `??`) or would store as a backup (ending in `_bak0`) uses the default slot.
 
 When a checkpoint slot is overwritten, older saves that pointed to the previous snapshot stop offering **Load Last Checkpoint** rather than loading the wrong one.
 
@@ -72,7 +73,7 @@ Call **Add Autosave Blocker** with a name such as `Combat` or `Cutscene`, and **
 
 Call **Manual Save** with a **Save Name**. Saving again with the same name replaces that save. An optional **Display Name** sets the menu label.
 
-Manual saves ignore **Enable Autosave**, blockers, and the minimum save interval. They return `false` on an excluded map, while another EMS save or load is running, while streaming isn't ready, or if the name has no characters a file name can use (for example `??`).
+Manual saves ignore **Enable Autosave**, blockers, and the minimum save interval. They return `false` on an excluded map, while another EMS save or load is running, while streaming isn't ready, if the name has no characters a file name can use (for example `??`), or if EMS would store the save as a backup (a name ending in `_bak0`; see **EMS backups** in [Good to know](#good-to-know)).
 
 ## Save and load menus
 
@@ -124,8 +125,18 @@ You can skip this section until you need it.
 **World Partition and level streaming**
 
 - Cells or sublevels streaming in delay waiting saves; they are not canceled.
-- EMS **1.86** or newer is recommended. With EMS 1.85 (the minimum), each addon save clears EMS's in-memory streaming data, and the addon logs a warning.
+- A save that replaces an existing slot first deletes that slot's old Level data, so streamed cells keep restoring the running session from memory. Until the save finishes, that slot cannot be loaded.
 - If **Save Data Flags** leaves out **Level**, the slot has no Level data until a later save includes it.
+
+**EMS backups**
+
+With EMS's **Auto Backup Previous Data** setting on, every slot keeps a backup of its previous write. EMS's **Get Backup Name** returns the backup's slot name (`<slot>_bak0`, or `bak0_<slot>` on consoles), and EMS treats that name as read-only.
+
+- **Load Save** loads a backup like any other slot, and **Get Save Slot Details** names it like the slot it backs up. **Get Save Slots** never lists backups.
+- A backup belongs to the profile of the slot it backs up. After loading one, autosaves continue in that profile, and autosave rotation never replaces the slot whose backup is being played.
+- With **Autosave Slot Count** `0` or `1`, the next autosave after loading a backup writes the slot the backup belongs to (so does a manual or checkpoint save of that slot). It first restores the backup onto that slot, as EMS's **Copy Save Slot** does, so the backup stays unchanged and a failed save returns to it. The slot's newer save is replaced.
+- The addon never writes into a backup. **Manual Save** refuses save names EMS would store as a backup, such as `Old_bak0`, and **Set Save Slot Display Name** refuses backups. A **Checkpoint Slot Name** like that uses the default checkpoint slot instead.
+- While the current EMS user is a backup user, every addon save fails before anything is written.
 
 **Pause menus**
 
@@ -150,7 +161,7 @@ Changing the EMS user cancels waiting and running addon saves. Direct EMS calls 
 | Manual save | `<profile>_manual_<name>` |
 | Checkpoint | `<profile>_checkpoint`, or `<profile>_checkpoint_<slot name>` |
 
-Generated names are lowercase, so names that differ only in case share a slot, and **Get Save Profile** may return `game1` for `Game1`. Compare profiles ignoring case, and don't end profile names with these suffixes.
+Generated names are lowercase, so names that differ only in case share a slot, and **Get Save Profile** may return `game1` for `Game1`. Compare profiles ignoring case, and don't end profile names with these suffixes or with EMS's backup suffix `_bak0`.
 
 ## Blueprint nodes
 

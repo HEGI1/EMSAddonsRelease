@@ -1,5 +1,24 @@
 # Changelog
 
+## 1.3.6 - 2026-11-23
+
+### Compatibility
+
+- **Requires Easy Multi Save 1.87.** EMS Addons now always requires the latest Easy Multi Save release. Building against an older EMS stops with a message naming the required version. Support for EMS 1.85 and 1.86 was removed.
+
+### Fixed
+
+- **Autosave and Checkpoints:** builds with Easy Multi Save 1.87. Autosave When Leaving Map relies on EMS's streaming cache, which keeps streamed-out actor data when the save fails.
+- **Autosave and Checkpoints:** addon saves never write into or delete an EMS backup. EMS 1.87 resolves a slot name ending in `_bak0` to the read-only backup of another slot, so a **Manual Save** named `Old_bak0` would have targeted the backup of save `Old`, failed, and deleted that backup while cleaning up. With World Partition or level streaming it would have removed the backup's Level data before saving. **Manual Save** now refuses such names, a **Checkpoint Slot Name** like that uses the default checkpoint slot, **Set Save Slot Display Name** refuses backups, and no addon save starts while a backup EMS user is selected.
+- **Autosave and Checkpoints:** a game continued from a loaded EMS backup keeps saving into the profile of the slot the backup belongs to. **Get Slot Profile** treated the backup as a profile of its own, so later autosaves would have started an unrelated set of slots. Autosave rotation also never replaces the slot whose backup is being played, **Load Last Checkpoint** reloads a loaded checkpoint backup, and **Get Save Slot Details** names a backup like the slot it backs up.
+- **Autosave and Checkpoints:** continuing a loaded EMS backup no longer overwrites that backup. With **Autosave Slot Count** `0` or `1` (or a manual or checkpoint save of the same name), the next save writes the slot the backup belongs to, and EMS's auto backup replaced the loaded backup with that slot's previous save, file by file. A failed save then returned the game to that mix and deleted the slot. The save now restores the backup onto its slot first (EMS **Copy Save Slot**, which keeps the backup), so the backup stays as it was and a failed save returns to it intact. The slot's newer save is replaced.
+- **Autosave and Checkpoints:** a 1.1 checkpoint record in a loaded EMS backup no longer blocks every autosave. Carrying it forward tried to upgrade the record inside the read-only backup. It is now upgraded in the new slot and names the backup's own slot, which ends the checkpoint once that slot is saved over. A save never carries a checkpoint whose save it is replacing.
+
+### Documentation
+
+- **README:** Easy Multi Save 1.87 is required; EMS Addons always requires the latest EMS release.
+- **Autosave and Checkpoints:** documented how EMS backups are handled and removed the EMS 1.85/1.86 streaming notes.
+
 ## 1.3.5 - 2026-11-15
 
 ### Documentation

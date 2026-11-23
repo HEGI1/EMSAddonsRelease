@@ -7,6 +7,7 @@
 #include "EMSAutosaveSubsystem.h"
 #include "EMSMisc.h"
 #include "EMSObject.h"
+#include "EMSTypes.h"
 
 #include "Engine/Engine.h"
 #include "Engine/GameInstance.h"
@@ -184,13 +185,10 @@ void EMSAutosaveMapTravel::HandlePreLoadMap(const FWorldContext& WorldContext, c
 
 	if (EMSFLAG::IsLevel(SaveDataFlags))
 	{
+		// Streamed-out actor data lives in EMS's session streaming cache, which a failed
+		// disk write leaves untouched, so nothing has to be handed back on failure.
 		const FLevelSnapshot Snapshot = EMS->CaptureActorSnapshot(false);
-		const bool bLevelSaved = EMS->SaveLevelActors(false, Snapshot);
-		if (!bLevelSaved && !Snapshot.StreamingActors.IsEmpty())
-		{
-			EMS->RestoreStreamingActors(Snapshot.StreamingActors);
-		}
-		bSuccess &= bLevelSaved;
+		bSuccess &= EMS->SaveLevelActors(false, Snapshot);
 	}
 
 	const FName SavedLevelName = EMS->GetLevelName();
