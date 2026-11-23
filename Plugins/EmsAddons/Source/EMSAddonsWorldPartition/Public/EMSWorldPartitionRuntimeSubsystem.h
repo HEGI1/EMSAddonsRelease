@@ -3,6 +3,7 @@
 
 #include "CoreMinimal.h"
 #include "Engine/EngineTypes.h"
+#include "GameFramework/Actor.h"
 #include "Subsystems/WorldSubsystem.h"
 #include "UObject/ObjectKey.h"
 #include "EMSWorldPartitionRuntimeTypes.h"

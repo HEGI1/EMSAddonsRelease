@@ -1,5 +1,17 @@
 # Changelog
 
+## 1.3.7 - 2026-11-23
+
+### Fixed
+
+- **Build:** the plugin compiles with unity builds and precompiled headers turned off, as in Unreal's strict-includes plugin check. Several source files and public headers relied on engine headers that only a unity build or a shared precompiled header provided.
+- **Autosave and Checkpoints:** with EMS's **Auto Backup Previous Data**, **Carried Custom Files** and the checkpoint record keep their backups. An addon save copied them into the slot it replaced with **Copy Save Slot**, which removed that slot's backups of them. EMS then had nothing to fall back on when such a file was damaged, and a loaded backup had no checkpoint.
+- **Autosave and Checkpoints:** continuing a loaded EMS backup no longer changes the backup's label. The save into the slot the backup belongs to gave the backup the display name and save type of the slot's newer save. The backup now keeps its own.
+
+### Documentation
+
+- **Autosave and Checkpoints:** the EMS backups section now explains that EMS loads the backup of a damaged addon save file, that replaced Carried Custom Files and checkpoint records become backups, and what a continued backup keeps.
+
 ## 1.3.6 - 2026-11-23
 
 ### Compatibility

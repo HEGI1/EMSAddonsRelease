@@ -338,13 +338,16 @@ protected:
 	 * TargetSlot with EMS Copy Save Slot, and removes carried files the source does not have, so the
 	 * target never keeps stale ones. A checkpoint save excludes the record: it writes its own after success.
 	 * A 1.1 record in a read-only EMS backup is upgraded in the target and names the backup's primary slot.
+	 * With EMS Auto Backup, the target's replaced files become their backups, as with any EMS write.
 	 */
 	bool CarryCustomFiles(const FString& SourceSlot, const FString& TargetSlot, bool bIncludeCheckpointRecord = true);
 
 	/**
 	 * When CurrentSlot is an EMS backup of TargetSlot, restores it onto TargetSlot (EMS Copy Save Slot,
 	 * which keeps the backup) before a save writes there. Otherwise EMS's auto backup would replace the
-	 * loaded backup with the slot's previous files. False when the restore failed; nothing else to do is true.
+	 * loaded backup with the slot's previous files. The carried files, checkpoint record and display metadata
+	 * are restored too, and slot files the backup has no copy of are removed. False when the restore failed;
+	 * nothing else to do is true.
 	 */
 	bool RestoreOwnBackupBeforeSave(const FString& CurrentSlot, const FString& TargetSlot);
 

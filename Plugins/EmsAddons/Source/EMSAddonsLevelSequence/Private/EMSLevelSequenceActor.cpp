@@ -10,6 +10,7 @@
 #include "EMSMisc.h"
 #include "EMSObject.h"
 #include "EMSTypes.h"
+#include "Engine/Level.h"
 #include "Engine/Texture2D.h"
 #include "Engine/World.h"
 #include "LevelSequence.h"

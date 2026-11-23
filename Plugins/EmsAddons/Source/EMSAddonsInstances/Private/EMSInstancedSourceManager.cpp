@@ -20,8 +20,10 @@
 #include "EngineUtils.h"
 #include "Hash/xxhash.h"
 #include "ProfilingDebugging/CpuProfilerTrace.h"
+#include "Templates/Greater.h"
 #include "TimerManager.h"
 #include "UObject/ConstructorHelpers.h"
+#include "UObject/Package.h"
 #include "WorldPartition/ActorInstanceGuids.h"
 
 #define LOCTEXT_NAMESPACE "EMSInstancedSourceManager"

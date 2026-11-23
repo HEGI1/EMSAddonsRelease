@@ -9,6 +9,7 @@
 #include "EMSWorldPartitionPlacedSubsystem.h"
 #include "EMSTypes.h"
 #include "Engine/World.h"
+#include "UObject/Package.h"
 
 namespace
 {

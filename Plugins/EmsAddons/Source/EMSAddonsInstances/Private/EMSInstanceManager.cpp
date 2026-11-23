@@ -12,6 +12,7 @@
 #include "InstancedFoliageActor.h"
 #include "Misc/Crc.h"
 #include "ProfilingDebugging/CpuProfilerTrace.h"
+#include "UObject/Package.h"
 #include "UObject/UObjectGlobals.h"
 #include "WorldPartition/ActorInstanceGuids.h"
 #include "WorldPartition/HLOD/HLODInstancedStaticMeshComponent.h"

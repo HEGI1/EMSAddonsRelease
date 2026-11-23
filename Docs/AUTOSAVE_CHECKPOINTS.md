@@ -130,11 +130,12 @@ You can skip this section until you need it.
 
 **EMS backups**
 
-With EMS's **Auto Backup Previous Data** setting on, every slot keeps a backup of its previous write. EMS's **Get Backup Name** returns the backup's slot name (`<slot>_bak0`, or `bak0_<slot>` on consoles), and EMS treats that name as read-only.
+With EMS's **Auto Backup Previous Data** setting on, every slot keeps a backup of its previous write. If a file of an addon save is damaged, EMS loads its backup instead, as for any slot. EMS's **Get Backup Name** returns the backup's slot name (`<slot>_bak0`, or `bak0_<slot>` on consoles), and EMS treats that name as read-only.
 
+- When an addon save replaces a slot's **Carried Custom Files** and checkpoint record, the replaced copies become their backups, as with any EMS write. Only a checkpoint slot's own backup has no checkpoint: a checkpoint save clears its record before writing the new one.
 - **Load Save** loads a backup like any other slot, and **Get Save Slot Details** names it like the slot it backs up. **Get Save Slots** never lists backups.
 - A backup belongs to the profile of the slot it backs up. After loading one, autosaves continue in that profile, and autosave rotation never replaces the slot whose backup is being played.
-- With **Autosave Slot Count** `0` or `1`, the next autosave after loading a backup writes the slot the backup belongs to (so does a manual or checkpoint save of that slot). It first restores the backup onto that slot, as EMS's **Copy Save Slot** does, so the backup stays unchanged and a failed save returns to it. The slot's newer save is replaced.
+- With **Autosave Slot Count** `0` or `1`, the next autosave after loading a backup writes the slot the backup belongs to (so does a manual or checkpoint save of that slot). It first restores the backup onto that slot, as EMS's **Copy Save Slot** does, so the backup's data and label stay unchanged and a failed save returns to it. Only its Slot Info time changes, because EMS stamps a restored slot. The slot's newer save is replaced.
 - The addon never writes into a backup. **Manual Save** refuses save names EMS would store as a backup, such as `Old_bak0`, and **Set Save Slot Display Name** refuses backups. A **Checkpoint Slot Name** like that uses the default checkpoint slot instead.
 - While the current EMS user is a backup user, every addon save fails before anything is written.
 

@@ -9,6 +9,7 @@
 #include "EMSCheckpointUtils.h"
 #include "EMSMisc.h"
 #include "EMSObject.h"
+#include "Engine/GameInstance.h"
 #include "Engine/Texture2D.h"
 #include "Engine/World.h"
 #include "EngineUtils.h"

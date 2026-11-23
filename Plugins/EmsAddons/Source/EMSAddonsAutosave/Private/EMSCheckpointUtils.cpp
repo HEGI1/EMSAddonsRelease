@@ -4,6 +4,7 @@
 #include "EMSCheckpointSaveGame.h"
 #include "Engine/World.h"
 #include "Misc/PackageName.h"
+#include "UObject/Package.h"
 
 FSoftObjectPath EMSCheckpoint::GetWorldAssetPath(const UWorld* World)
 {

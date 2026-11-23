@@ -7,6 +7,7 @@
 #include "EMSAddonsTypes.h"
 #include "EMSInstancedSourceTypes.h"
 #include "EMSInstanceTransformUtils.h"
+#include "Engine/Level.h"
 #include "GameFramework/Actor.h"
 #include "Templates/Function.h"
 #include "UObject/ObjectKey.h"

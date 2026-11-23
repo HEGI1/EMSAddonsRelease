@@ -13,6 +13,7 @@
 #include "EMSObject.h"
 #include "EMSObjectAdv.h"
 #include "EMSPaths.h"
+#include "EMSPluginSettings.h"
 #include "EMSVersion.h"
 #include "EMSSaveSlotMetadata.h"
 #include "Engine/GameInstance.h"
@@ -122,6 +123,20 @@ namespace
 			}
 		}
 		return SlotName;
+	}
+
+	/**
+	 * Deletes a custom file from Slot through EMS, with a handle that names the file; nothing is read
+	 * from disk. Deleting never touches the file's backup. True when the file is gone afterwards.
+	 */
+	bool DeleteCustomFile(UEMSObject& EMS, const FString& Slot, const FString& File)
+	{
+		UEMSCheckpointSaveGame* Handle = NewObject<UEMSCheckpointSaveGame>(GetTransientPackage());
+		Handle->SaveGameName = File;
+		Handle->SlotName = Slot;
+		Handle->bUseSaveSlot = true;
+		EMS.DeleteCustomSave(Handle);
+		return !EMS.DoesCustomSaveExist(Slot, File);
 	}
 }
 
@@ -829,17 +844,29 @@ bool UEMSAutosaveSubsystem::CarryCustomFiles(const FString& SourceSlot, const FS
 			continue;
 		}
 
-		// The source has no such file, so the target's copy is older data. Remove it
-		// through EMS with a handle that names the file; nothing is read from disk.
-		UEMSCheckpointSaveGame* Handle = NewObject<UEMSCheckpointSaveGame>(GetTransientPackage());
-		Handle->SaveGameName = File;
-		Handle->SlotName = ValidTarget;
-		Handle->bUseSaveSlot = true;
-		EMS->DeleteCustomSave(Handle);
-		if (EMS->DoesCustomSaveExist(ValidTarget, File))
+		// The source has no such file, so the target's copy is older data.
+		if (!DeleteCustomFile(*EMS, ValidTarget, File))
 		{
 			LogMessage(FString::Printf(TEXT("Could not remove the outdated custom file %s from %s."), *File, *ValidTarget), true);
 			return false;
+		}
+	}
+
+	// Copy Save Slot removes the target's backups of the files it copies. With Auto Backup, keep them
+	// like any EMS write does: the file a save replaces becomes its backup. A restore from the target's
+	// own backup keeps that backup anyway.
+	TArray<TPair<FString, TArray<uint8>>> ReplacedFiles;
+	if (UEMSPluginSettings::Get()->bAutoBackup && !SourcePrimary.Equals(ValidTarget, ESearchCase::IgnoreCase))
+	{
+		for (const FString& File : Present)
+		{
+			const FString Path = EMS->CustomSaveFile(File, ValidTarget);
+			TArray<uint8> Data;
+			if (FSaveFileIntegrity::LoadFromFile(FFileContext(0, Path), Data) == EFileValidity::FILE_VALID
+				&& FSaveFileIntegrity::VerifyLocalFile(Path, Data))
+			{
+				ReplacedFiles.Emplace(FSavePaths::GetBackupSavePath(Path), MoveTemp(Data));
+			}
 		}
 	}
 
@@ -847,6 +874,14 @@ bool UEMSAutosaveSubsystem::CarryCustomFiles(const FString& SourceSlot, const FS
 		&& !EMSAdv->CopySaveSlot(ValidTarget, ValidSource, ECopySaveSlotType::CustomFiles, Present, true))
 	{
 		return false;
+	}
+	for (const TPair<FString, TArray<uint8>>& Replaced : ReplacedFiles)
+	{
+		// Like EMS's own auto backup, a failed backup write never fails the save.
+		if (!FSaveFileIntegrity::SaveToFile(FFileContext(0, Replaced.Key), Replaced.Value))
+		{
+			LogMessage(FString::Printf(TEXT("Could not keep the EMS backup %s of a carried file."), *Replaced.Key), true);
+		}
 	}
 	return !bUpgradeInTarget || UpgradeLegacyCheckpointRecord(ValidTarget, SourcePrimary);
 }
@@ -878,8 +913,12 @@ bool UEMSAutosaveSubsystem::RestoreOwnBackupBeforeSave(const FString& CurrentSlo
 	would return the game to that mix. EMS's own restore (Copy Save Slot from a backup onto its slot) keeps the backup
 	unchanged, so afterwards those copies write the backup's own data back. The slot's newer save is
 	replaced, as the player chose to continue the backup.
+	The slot's display metadata is restored as well. It is the save's last write, so without it EMS
+	would back up the replaced save's label and save type into the backup.
 	*/
-	if (!EMSAdv->CopySaveSlot(ValidTarget, ValidCurrent, ECopySaveSlotType::FullSlot, GetCarriedCustomFiles(true), true))
+	TArray<FString> RestoredCustomFiles = GetCarriedCustomFiles(true);
+	RestoredCustomFiles.Add(GetDefault<UEMSSaveSlotMetadata>()->SaveGameName);
+	if (!EMSAdv->CopySaveSlot(ValidTarget, ValidCurrent, ECopySaveSlotType::FullSlot, RestoredCustomFiles, true))
 	{
 		LogMessage(FString::Printf(TEXT("The save was not started: EMS could not restore the backup %s onto %s before saving."), *ValidCurrent, *ValidTarget), true);
 		return false;
@@ -887,6 +926,11 @@ bool UEMSAutosaveSubsystem::RestoreOwnBackupBeforeSave(const FString& CurrentSlo
 
 	// A restore keeps the primary files the backup has no copy of. Writing them would back them up
 	// into the backup, so remove them now; the save writes its own.
+	const auto RefuseKeptData = [this, &ValidTarget, &ValidCurrent]()
+	{
+		LogMessage(FString::Printf(TEXT("The save was not started: %s keeps data that its backup %s does not have."), *ValidTarget, *ValidCurrent), true);
+		return false;
+	};
 	for (const EDeleteSlotType Type : { EDeleteSlotType::Player, EDeleteSlotType::Level })
 	{
 		const bool bPlayer = Type == EDeleteSlotType::Player;
@@ -899,8 +943,16 @@ bool UEMSAutosaveSubsystem::RestoreOwnBackupBeforeSave(const FString& CurrentSlo
 		EMS->DeleteDataFromSlot(ValidTarget, Type);
 		if (FSaveFileIntegrity::DoesSaveExist(TargetFile))
 		{
-			LogMessage(FString::Printf(TEXT("The save was not started: %s keeps data that its backup %s does not have."), *ValidTarget, *ValidCurrent), true);
-			return false;
+			return RefuseKeptData();
+		}
+	}
+	for (const FString& File : RestoredCustomFiles)
+	{
+		if (!EMS->DoesCustomSaveExist(ValidCurrent, File)
+			&& EMS->DoesCustomSaveExist(ValidTarget, File)
+			&& !DeleteCustomFile(*EMS, ValidTarget, File))
+		{
+			return RefuseKeptData();
 		}
 	}
 
