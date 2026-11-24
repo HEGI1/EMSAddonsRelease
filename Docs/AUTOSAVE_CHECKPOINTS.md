@@ -130,8 +130,9 @@ You can skip this section until you need it.
 
 **EMS backups**
 
-With EMS's **Auto Backup Previous Data** setting on, every slot keeps a backup of its previous write. If a file of an addon save is damaged, EMS loads its backup instead, as for any slot. EMS's **Get Backup Name** returns the backup's slot name (`<slot>_bak0`, or `bak0_<slot>` on consoles), and EMS treats that name as read-only.
+With EMS's **Auto Backup Previous Data** setting on, EMS backs up existing save files before overwriting them. If a file of an addon save is damaged, EMS can load its backup. EMS's **Get Backup Name** returns the backup's slot name (`<slot>_bak0`, or `bak0_<slot>` on consoles), and EMS treats that name as read-only.
 
+- When a save switches to an occupied slot during World Partition or level streaming, the addon backs up the old Level file before removing it if **Auto Backup Previous Data** is on and **Save Data Flags** includes **Level**. A Player-only save creates no Level backup.
 - When an addon save replaces a slot's **Carried Custom Files** and checkpoint record, the replaced copies become their backups, as with any EMS write. Only a checkpoint slot's own backup has no checkpoint: a checkpoint save clears its record before writing the new one.
 - **Load Save** loads a backup like any other slot, and **Get Save Slot Details** names it like the slot it backs up. **Get Save Slots** never lists backups.
 - A backup belongs to the profile of the slot it backs up. After loading one, autosaves continue in that profile, and autosave rotation never replaces the slot whose backup is being played.

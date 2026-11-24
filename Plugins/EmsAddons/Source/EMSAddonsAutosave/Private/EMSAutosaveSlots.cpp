@@ -561,6 +561,12 @@ bool UEMSAutosaveSubsystem::SwitchToSaveSlot(const FString& TargetSlot, const EE
 	if (Switch == EEMSSlotSwitch::ContinueSession && bStreamingSession)
 	{
 		const bool bHadLevelData = FSaveFileIntegrity::DoesSaveExist(LevelFile);
+		if (bHadLevelData && UEMSPluginSettings::Get()->bAutoBackup
+			&& EMSFLAG::IsLevel(GetDefault<UEMSAutosaveSettings>()->SaveDataFlags))
+		{
+			// EMS normally backs up Level data when it writes the replacement. That write sees no old file.
+			FSaveFileIntegrity::PerformAutoBackup(LevelFile);
+		}
 		EMS->DeleteDataFromSlot(ValidTarget, EDeleteSlotType::Level);
 		if (FSaveFileIntegrity::DoesSaveExist(LevelFile))
 		{

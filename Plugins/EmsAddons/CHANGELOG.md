@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.4.0 - 2026-11-24
+
+### Fixed
+
+- **Autosave and Checkpoints:** with EMS's **Auto Backup Previous Data** enabled, saves that replace Level data while World Partition or level streaming persistence is active now back up the previous Level file before removing it.
+
 ## 1.3.7 - 2026-11-23
 
 ### Fixed

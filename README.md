@@ -1,6 +1,6 @@
 # Easy Multi Save Addons
 
-**Current Version: 1.3.7**
+**Current Version: 1.4.0**
 
 **Easy Multi Save Addons** add ready-made save workflows to Easy Multi Save (EMS) for cases that would otherwise need project-specific Blueprint logic. Each addon uses the normal EMS save system: set it up once, then save and load through EMS as usual.
 
